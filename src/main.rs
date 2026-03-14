@@ -145,6 +145,15 @@ enum Commands {
         lon: Option<f64>,
     },
 
+    /// National snapshot — weather warnings, recent Dáil votes, and latest bills
+    ///
+    /// A single-call overview of what's happening in Ireland right now.
+    /// Combines Met Éireann warnings, Oireachtas divisions, and recent legislation.
+    ///
+    /// Examples:
+    ///   irl snapshot
+    Snapshot,
+
     /// Manage irl configuration
     Config {
         #[command(subcommand)]
@@ -317,16 +326,23 @@ async fn main() -> Result<()> {
         } => {
             handle_nearby(&output, location, lat, lon, cli.verbose, cli.quiet, cli.no_cache).await?;
         }
+
+        Commands::Snapshot => {
+            handle_snapshot(&output, cli.verbose, cli.quiet, cli.no_cache).await?;
+        }
     }
 
     Ok(())
 }
 
-/// Cross-source "nearby" handler — combines weather, water, and other data.
+/// Cross-source "nearby" handler — combines weather, water, TDs, and property data.
 #[derive(Debug, Serialize)]
 struct NearbyResult {
     location: geo::Location,
+    county: String,
     weather: Option<NearbyWeather>,
+    tds: Vec<NearbyTd>,
+    property: Option<NearbyProperty>,
     water_stations: Vec<NearbyWaterStation>,
 }
 
@@ -344,6 +360,54 @@ struct NearbyWeather {
 struct NearbyWaterStation {
     name: String,
     distance_km: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct NearbyTd {
+    name: String,
+    party: String,
+    constituency: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NearbyProperty {
+    county: String,
+    average_price: String,
+    median_price: String,
+    total_sales: u64,
+}
+
+/// National snapshot combining weather warnings, recent votes, and legislation.
+#[derive(Debug, Serialize)]
+struct SnapshotResult {
+    weather_warnings: Vec<SnapshotWarning>,
+    recent_votes: Vec<SnapshotVote>,
+    recent_bills: Vec<SnapshotBill>,
+}
+
+#[derive(Debug, Serialize)]
+struct SnapshotWarning {
+    level: String,
+    warning_type: String,
+    headline: String,
+    regions: Vec<String>,
+    onset: String,
+    expiry: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SnapshotVote {
+    date: String,
+    subject: String,
+    house: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SnapshotBill {
+    title: String,
+    year: String,
+    status: String,
+    sponsor: String,
 }
 
 async fn handle_nearby(
@@ -500,13 +564,185 @@ async fn handle_nearby(
         Err(_) => vec![],
     };
 
+    // Determine county from nearest station
+    let county = nearest_station
+        .map(|s| {
+            // Take the first county if there are multiple (e.g., "Clare/Limerick" → "Clare")
+            s.county.split('/').next().unwrap_or(s.county).trim().to_string()
+        })
+        .unwrap_or_default();
+
+    // Find TDs for this county's constituencies
+    let tds = {
+        let api = irl_oireachtas::api::OireachtasApi::new(verbose, quiet, no_cache);
+        match api {
+            Ok(api) => {
+                match api.list_members(Some("dail"), 200, 0).await {
+                    Ok(response) => {
+                        response
+                            .results
+                            .iter()
+                            .filter(|r| {
+                                let membership = r.member.memberships.as_ref().and_then(|ms| ms.last());
+                                let is_current = membership
+                                    .and_then(|mw| mw.membership.house.as_ref())
+                                    .and_then(|h| h.show_as.as_deref())
+                                    .map(|h| h.contains("34th"))
+                                    .unwrap_or(false);
+                                let member_const = membership
+                                    .and_then(|mw| mw.membership.represents.as_ref())
+                                    .and_then(|rs| rs.last())
+                                    .and_then(|rw| rw.represent.show_as.as_deref())
+                                    .unwrap_or("");
+                                is_current && member_const.to_lowercase().contains(&county.to_lowercase())
+                            })
+                            .map(|r| {
+                                let membership = r.member.memberships.as_ref().and_then(|ms| ms.last());
+                                NearbyTd {
+                                    name: r.member.full_name.clone().unwrap_or_default(),
+                                    party: membership
+                                        .and_then(|mw| mw.membership.parties.as_ref())
+                                        .and_then(|ps| ps.last())
+                                        .and_then(|pw| pw.party.show_as.clone())
+                                        .unwrap_or_default(),
+                                    constituency: membership
+                                        .and_then(|mw| mw.membership.represents.as_ref())
+                                        .and_then(|rs| rs.last())
+                                        .and_then(|rw| rw.represent.show_as.clone())
+                                        .unwrap_or_default(),
+                                }
+                            })
+                            .collect()
+                    }
+                    Err(_) => vec![],
+                }
+            }
+            Err(_) => vec![],
+        }
+    };
+
+    // Get property stats for this county
+    let property = if irl_property::api::PropertyData::is_loaded() {
+        irl_property::api::PropertyData::stats(Some(&county), None)
+            .ok()
+            .filter(|s| s.total_sales > 0)
+            .map(|stats| NearbyProperty {
+                county: county.clone(),
+                average_price: irl_property::models::format_price(stats.average_price),
+                median_price: irl_property::models::format_price(stats.median_price),
+                total_sales: stats.total_sales,
+            })
+    } else {
+        None
+    };
+
     let result = NearbyResult {
         location: loc,
+        county: county.clone(),
         weather,
+        tds,
+        property,
         water_stations,
     };
 
-    // Always output as JSON for this cross-source command
+    output.render_single(&result)?;
+
+    Ok(())
+}
+
+async fn handle_snapshot(
+    output: &OutputConfig,
+    verbose: bool,
+    quiet: bool,
+    no_cache: bool,
+) -> Result<()> {
+    output.print_header("Ireland Snapshot");
+
+    // Weather warnings
+    let weather_warnings = {
+        let met_api = irl_met::api::MetApi::new(verbose, quiet, no_cache)?;
+        match met_api.get_warnings().await {
+            Ok(warnings) => warnings
+                .iter()
+                .map(|w| SnapshotWarning {
+                    level: w.level.clone().unwrap_or_default(),
+                    warning_type: w.warning_type.clone().unwrap_or_default(),
+                    headline: w.headline.clone().unwrap_or_default(),
+                    regions: w.regions.clone().unwrap_or_default(),
+                    onset: w.onset.clone().unwrap_or_default(),
+                    expiry: w.expiry.clone().unwrap_or_default(),
+                })
+                .collect(),
+            Err(_) => vec![],
+        }
+    };
+
+    // Recent Dáil votes
+    let recent_votes = {
+        let api = irl_oireachtas::api::OireachtasApi::new(verbose, quiet, no_cache);
+        match api {
+            Ok(api) => match api.list_divisions(10, 0).await {
+                Ok(response) => response
+                    .results
+                    .iter()
+                    .map(|r| {
+                        // Use raw API data, not truncated display rows
+                        let subject = r.subject.as_ref().and_then(|s| s.show_as.clone())
+                            .or_else(|| r.division.as_ref().and_then(|d| d.debate.as_ref()).and_then(|db| db.show_as.clone()))
+                            .unwrap_or_default();
+                        let date = r.date.clone().or_else(|| {
+                            r.division.as_ref().and_then(|d| d.uri.as_ref()).and_then(|uri| {
+                                uri.split('/').rev().nth(1)
+                                    .filter(|s| s.len() == 10 && s.contains('-'))
+                                    .map(|s| s.to_string())
+                            })
+                        }).unwrap_or_default();
+                        let house = r.house.as_ref().and_then(|h| h.show_as.clone())
+                            .or_else(|| r.division.as_ref().and_then(|d| d.uri.as_ref()).and_then(|uri| {
+                                if uri.contains("/dail/") { Some("Dáil Éireann".to_string()) }
+                                else if uri.contains("/seanad/") { Some("Seanad Éireann".to_string()) }
+                                else { None }
+                            }))
+                            .unwrap_or_default();
+                        SnapshotVote { date, subject, house }
+                    })
+                    .collect(),
+                Err(_) => vec![],
+            },
+            Err(_) => vec![],
+        }
+    };
+
+    // Recent legislation
+    let recent_bills = {
+        let api = irl_oireachtas::api::OireachtasApi::new(verbose, quiet, no_cache);
+        match api {
+            Ok(api) => match api.list_legislation(10, 0).await {
+                Ok(response) => response
+                    .results
+                    .iter()
+                    .map(|r| {
+                        let row = irl_oireachtas::models::BillRow::from_result(r);
+                        SnapshotBill {
+                            title: row.title,
+                            year: row.year,
+                            status: row.status,
+                            sponsor: row.sponsor,
+                        }
+                    })
+                    .collect(),
+                Err(_) => vec![],
+            },
+            Err(_) => vec![],
+        }
+    };
+
+    let result = SnapshotResult {
+        weather_warnings,
+        recent_votes,
+        recent_bills,
+    };
+
     output.render_single(&result)?;
 
     Ok(())
