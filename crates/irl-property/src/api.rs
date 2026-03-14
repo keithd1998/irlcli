@@ -39,4 +39,13 @@ impl PropertyData {
         let prices = db.get_prices(county, year)?;
         Ok(PropertyStats::calculate(&prices))
     }
+
+    pub fn trends(
+        county: Option<&str>,
+        from_year: Option<&str>,
+        to_year: Option<&str>,
+    ) -> Result<Vec<(String, f64, f64, u64)>, anyhow::Error> {
+        let db = PropertyDb::open()?;
+        db.get_yearly_stats(county, from_year, to_year)
+    }
 }

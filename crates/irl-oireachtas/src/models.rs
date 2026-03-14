@@ -464,7 +464,10 @@ pub struct DebateRecord {
     pub date: Option<String>,
     pub chamber: Option<ChamberInfo>,
     pub counts: Option<DebateCounts>,
-    pub sections: Option<Vec<DebateSection>>,
+    pub uri: Option<String>,
+    /// Debate sections — the API uses `debateSections` as the field name
+    #[serde(rename = "debateSections")]
+    pub debate_sections: Option<Vec<DebateSectionWrapper>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -481,6 +484,12 @@ pub struct DebateCounts {
     pub question_count: Option<u32>,
     #[serde(rename = "debateSectionCount")]
     pub debate_section_count: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DebateSectionWrapper {
+    #[serde(rename = "debateSection")]
+    pub debate_section: Option<DebateSection>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -509,15 +518,39 @@ impl DebateRow {
             .and_then(|r| r.chamber.as_ref())
             .and_then(|c| c.show_as.clone())
             .unwrap_or_default();
-        let section_count = record
-            .and_then(|r| r.counts.as_ref())
-            .and_then(|c| c.debate_section_count)
-            .unwrap_or(0);
+
+        // Build sections summary from debateSections if available, fall back to count
+        let sections = record
+            .and_then(|r| r.debate_sections.as_ref())
+            .filter(|ds| !ds.is_empty())
+            .map(|ds| {
+                let titles: Vec<String> = ds
+                    .iter()
+                    .filter_map(|w| w.debate_section.as_ref())
+                    .filter_map(|s| s.show_as.clone())
+                    .collect();
+                if titles.len() <= 3 {
+                    titles.join("; ")
+                } else {
+                    format!(
+                        "{}; ... ({} more)",
+                        titles[..2].join("; "),
+                        titles.len() - 2
+                    )
+                }
+            })
+            .unwrap_or_else(|| {
+                let count = record
+                    .and_then(|r| r.counts.as_ref())
+                    .and_then(|c| c.debate_section_count)
+                    .unwrap_or(0);
+                format!("{} sections", count)
+            });
 
         Self {
             date,
             chamber,
-            sections: format!("{} sections", section_count),
+            sections,
         }
     }
 }

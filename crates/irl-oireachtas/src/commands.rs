@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Subcommand;
+use serde::Serialize;
 
 use irl_core::fuzzy;
 use irl_core::output::OutputConfig;
@@ -122,6 +123,20 @@ pub enum OireachtasCommands {
         /// Page number (0-based)
         #[arg(long, default_value = "0")]
         page: u32,
+    },
+
+    /// TD profile — unified view of a member's activity
+    ///
+    /// Shows a TD's party, constituency, recent questions, and sponsored bills
+    /// in a single JSON output. Supports fuzzy name matching.
+    ///
+    /// Examples:
+    ///   irl oireachtas td --name "Paschal Donohoe"
+    ///   irl oireachtas td --name "mcdonald"
+    Td {
+        /// TD name (fuzzy matching supported)
+        #[arg(long)]
+        name: String,
     },
 }
 
@@ -387,7 +402,166 @@ pub async fn handle_command(
             output.print_info(&format!("{} divisions found", display_rows.len()));
             output.render_full(&display_rows, &response.results)?;
         }
+
+        OireachtasCommands::Td { name } => {
+            output.print_header("TD Profile");
+
+            // Find the TD by name (fuzzy matching)
+            let all_members = paginate_all(|limit, skip| api.list_members(Some("dail"), limit, skip)).await?;
+
+            // Collect all member names for fuzzy matching
+            let member_names: Vec<String> = all_members
+                .iter()
+                .filter_map(|r| r.member.full_name.clone())
+                .collect();
+            let name_refs: Vec<&str> = member_names.iter().map(|s| s.as_str()).collect();
+
+            // Find exact or fuzzy match
+            let name_lower = name.to_lowercase();
+            let matched_name = member_names
+                .iter()
+                .find(|n| n.to_lowercase() == name_lower)
+                .or_else(|| {
+                    member_names
+                        .iter()
+                        .find(|n| n.to_lowercase().contains(&name_lower))
+                })
+                .cloned()
+                .or_else(|| {
+                    let matches = fuzzy::fuzzy_match(name, &name_refs, 0.75);
+                    matches.first().map(|m| m.candidate.clone())
+                });
+
+            let matched_name = match matched_name {
+                Some(n) => n,
+                None => {
+                    let suggestions = fuzzy::fuzzy_match(name, &name_refs, 0.6);
+                    if suggestions.is_empty() {
+                        output.print_error(&format!(
+                            "No TD found matching '{}'. Use `irl oireachtas members` to see all TDs.",
+                            name
+                        ));
+                    } else {
+                        output.print_error(&format!(
+                            "No TD found matching '{}'. {}",
+                            name,
+                            fuzzy::format_suggestions(&suggestions)
+                        ));
+                    }
+                    return Ok(());
+                }
+            };
+
+            // Get member info
+            let member_result = all_members
+                .iter()
+                .rev()
+                .find(|r| r.member.full_name.as_deref() == Some(&matched_name));
+
+            let (member_party, member_constituency, member_house) = member_result
+                .map(|r| {
+                    let ms = r.member.memberships.as_ref().and_then(|ms| ms.last());
+                    let party = ms
+                        .and_then(|mw| mw.membership.parties.as_ref())
+                        .and_then(|ps| ps.last())
+                        .and_then(|pw| pw.party.show_as.clone())
+                        .unwrap_or_default();
+                    let constituency = ms
+                        .and_then(|mw| mw.membership.represents.as_ref())
+                        .and_then(|rs| rs.last())
+                        .and_then(|rw| rw.represent.show_as.clone())
+                        .unwrap_or_default();
+                    let house = ms
+                        .and_then(|mw| mw.membership.house.as_ref())
+                        .and_then(|h| h.show_as.clone())
+                        .unwrap_or_default();
+                    (party, constituency, house)
+                })
+                .unwrap_or_default();
+
+            // Fetch questions by this member
+            let all_questions = paginate_all(|limit, skip| api.list_questions(limit, skip)).await?;
+            let member_questions: Vec<TdQuestion> = all_questions
+                .iter()
+                .filter(|r| {
+                    r.question
+                        .by
+                        .as_ref()
+                        .and_then(|b| b.show_as.as_ref())
+                        .map(|n| n.to_lowercase().contains(&matched_name.to_lowercase()))
+                        .unwrap_or(false)
+                })
+                .take(10)
+                .map(|r| TdQuestion {
+                    date: r.question.date.clone().unwrap_or_default(),
+                    question_type: r.question.question_type.clone().unwrap_or_default(),
+                    topic: r.question.show_as.clone().unwrap_or_default(),
+                })
+                .collect();
+
+            // Fetch bills sponsored by this member
+            let all_bills = paginate_all(|limit, skip| api.list_legislation(limit, skip)).await?;
+            let sponsored_bills: Vec<TdBill> = all_bills
+                .iter()
+                .filter(|r| {
+                    r.bill
+                        .sponsors
+                        .as_ref()
+                        .map(|sponsors| {
+                            sponsors.iter().any(|sw| {
+                                sw.sponsor
+                                    .by
+                                    .as_ref()
+                                    .and_then(|by| by.show_as.as_ref())
+                                    .map(|n| n.to_lowercase().contains(&matched_name.to_lowercase()))
+                                    .unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false)
+                })
+                .map(|r| TdBill {
+                    title: r.bill.short_title_en.clone().unwrap_or_default(),
+                    year: r.bill.bill_year.clone().unwrap_or_default(),
+                    status: r.bill.status.clone().unwrap_or_default(),
+                })
+                .collect();
+
+            let profile = TdProfile {
+                name: matched_name,
+                party: member_party,
+                constituency: member_constituency,
+                house: member_house,
+                recent_questions: member_questions,
+                sponsored_bills,
+            };
+
+            output.render_single(&profile)?;
+        }
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct TdProfile {
+    name: String,
+    party: String,
+    constituency: String,
+    house: String,
+    recent_questions: Vec<TdQuestion>,
+    sponsored_bills: Vec<TdBill>,
+}
+
+#[derive(Debug, Serialize)]
+struct TdQuestion {
+    date: String,
+    question_type: String,
+    topic: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TdBill {
+    title: String,
+    year: String,
+    status: String,
 }

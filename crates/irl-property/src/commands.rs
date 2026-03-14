@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Subcommand;
+use serde::Serialize;
 
 use irl_core::output::OutputConfig;
 
@@ -56,6 +57,25 @@ pub enum PropertyCommands {
         /// Compare with another year
         #[arg(long)]
         compare: Option<String>,
+    },
+
+    /// Year-over-year property price trends
+    ///
+    /// Shows average and median prices by year with percentage changes.
+    ///
+    /// Examples:
+    ///   irl property trends --county Dublin
+    ///   irl property trends --county Dublin --from 2020 --to 2024
+    Trends {
+        /// Filter by county name
+        #[arg(long)]
+        county: Option<String>,
+        /// Start year
+        #[arg(long)]
+        from: Option<String>,
+        /// End year
+        #[arg(long)]
+        to: Option<String>,
     },
 
     /// Download/refresh local property data
@@ -137,6 +157,58 @@ pub async fn handle_command(
             }
         }
 
+        PropertyCommands::Trends { county, from, to } => {
+            output.print_header("Property Price Trends");
+
+            if !PropertyData::is_loaded() {
+                output.print_error(
+                    "No property data loaded. Run 'irl property update' for instructions.",
+                );
+                return Ok(());
+            }
+
+            let yearly = PropertyData::trends(
+                county.as_deref(),
+                from.as_deref(),
+                to.as_deref(),
+            )?;
+
+            if yearly.is_empty() {
+                output.print_info("No data found for the given filters.");
+                return Ok(());
+            }
+
+            let mut trend_rows: Vec<TrendYear> = Vec::new();
+            for (i, (year, avg, median, count)) in yearly.iter().enumerate() {
+                let yoy_change = if i > 0 {
+                    let prev_median = yearly[i - 1].2;
+                    if prev_median > 0.0 {
+                        Some(((median - prev_median) / prev_median) * 100.0)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                trend_rows.push(TrendYear {
+                    year: year.clone(),
+                    average_price: format_price(*avg),
+                    median_price: format_price(*median),
+                    sales_count: *count,
+                    yoy_change_pct: yoy_change.map(|c| format!("{:+.1}%", c)),
+                });
+            }
+
+            let label = if let Some(c) = county {
+                format!("{} — year-over-year", c)
+            } else {
+                "National — year-over-year".to_string()
+            };
+            output.print_info(&label);
+            output.render_single(&trend_rows)?;
+        }
+
         PropertyCommands::Update => {
             output.print_header("Property Price Register - Data Update");
 
@@ -175,6 +247,15 @@ pub async fn handle_command(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct TrendYear {
+    year: String,
+    average_price: String,
+    median_price: String,
+    sales_count: u64,
+    yoy_change_pct: Option<String>,
 }
 
 fn build_label(county: Option<&str>, year: Option<&str>) -> String {

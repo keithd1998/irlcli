@@ -251,6 +251,75 @@ impl PropertyDb {
         }
         Ok(prices)
     }
+    pub fn get_yearly_stats(
+        &self,
+        county: Option<&str>,
+        from_year: Option<&str>,
+        to_year: Option<&str>,
+    ) -> Result<Vec<(String, f64, f64, u64)>, anyhow::Error> {
+        let mut sql = "SELECT SUBSTR(date, 1, 4) as year, \
+                       AVG(price) as avg_price, \
+                       COUNT(*) as sales_count \
+                       FROM property_sales WHERE 1=1"
+            .to_string();
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(county) = county {
+            sql.push_str(" AND LOWER(county) LIKE ?");
+            param_values.push(Box::new(format!("%{}%", county.to_lowercase())));
+        }
+        if let Some(from) = from_year {
+            sql.push_str(" AND SUBSTR(date, 1, 4) >= ?");
+            param_values.push(Box::new(from.to_string()));
+        }
+        if let Some(to) = to_year {
+            sql.push_str(" AND SUBSTR(date, 1, 4) <= ?");
+            param_values.push(Box::new(to.to_string()));
+        }
+
+        sql.push_str(" GROUP BY SUBSTR(date, 1, 4) ORDER BY year");
+
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_ref.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, u64>(2)?,
+            ))
+        })?;
+
+        // Now get median per year (requires separate queries)
+        let mut results = Vec::new();
+        for row in rows {
+            let (year, avg, count) = row?;
+            // Get median for this year
+            let median = self.get_median_for_year(county, &year)?;
+            results.push((year, avg, median, count));
+        }
+        Ok(results)
+    }
+
+    fn get_median_for_year(
+        &self,
+        county: Option<&str>,
+        year: &str,
+    ) -> Result<f64, anyhow::Error> {
+        let prices = self.get_prices(county, Some(year))?;
+        if prices.is_empty() {
+            return Ok(0.0);
+        }
+        let mut sorted = prices;
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = sorted.len() / 2;
+        if sorted.len() % 2 == 0 {
+            Ok((sorted[mid - 1] + sorted[mid]) / 2.0)
+        } else {
+            Ok(sorted[mid])
+        }
+    }
 }
 
 /// Convert dd/mm/yyyy to yyyy-mm-dd
