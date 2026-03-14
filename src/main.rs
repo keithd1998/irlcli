@@ -145,6 +145,20 @@ enum Commands {
         lon: Option<f64>,
     },
 
+    /// Flood risk — rainfall near water monitoring stations
+    ///
+    /// Combines Met Éireann rainfall data with OPW water station locations
+    /// to assess where heavy rain may be affecting river levels.
+    ///
+    /// Examples:
+    ///   irl flood-risk
+    ///   irl flood-risk --county Galway
+    FloodRisk {
+        /// Filter to stations in a specific county
+        #[arg(long)]
+        county: Option<String>,
+    },
+
     /// National snapshot — weather warnings, recent Dáil votes, and latest bills
     ///
     /// A single-call overview of what's happening in Ireland right now.
@@ -325,6 +339,10 @@ async fn main() -> Result<()> {
             lon,
         } => {
             handle_nearby(&output, location, lat, lon, cli.verbose, cli.quiet, cli.no_cache).await?;
+        }
+
+        Commands::FloodRisk { county } => {
+            handle_flood_risk(&output, county, cli.verbose, cli.quiet, cli.no_cache).await?;
         }
 
         Commands::Snapshot => {
@@ -742,6 +760,163 @@ async fn handle_snapshot(
         recent_votes,
         recent_bills,
     };
+
+    output.render_single(&result)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct FloodRiskResult {
+    warnings: Vec<SnapshotWarning>,
+    stations: Vec<FloodRiskStation>,
+}
+
+#[derive(Debug, Serialize)]
+struct FloodRiskStation {
+    name: String,
+    lat: f64,
+    lon: f64,
+    nearest_met_station: String,
+    met_station_distance_km: f64,
+    rainfall_6h_mm: f64,
+    risk_level: String,
+}
+
+async fn handle_flood_risk(
+    output: &OutputConfig,
+    county: &Option<String>,
+    verbose: bool,
+    quiet: bool,
+    no_cache: bool,
+) -> Result<()> {
+    use irl_met::locations::STATIONS as MET_STATIONS;
+
+    output.print_header("Flood Risk Assessment");
+
+    // Get weather warnings (rain/flood specific)
+    let met_api = irl_met::api::MetApi::new(verbose, quiet, no_cache)?;
+    let all_warnings = met_api.get_warnings().await.unwrap_or_default();
+    let warnings: Vec<SnapshotWarning> = all_warnings
+        .iter()
+        .filter(|w| {
+            let wtype = w.warning_type.as_deref().unwrap_or("").to_lowercase();
+            wtype.contains("rain") || wtype.contains("flood") || wtype.contains("thunder")
+        })
+        .map(|w| SnapshotWarning {
+            level: w.level.clone().unwrap_or_default(),
+            warning_type: w.warning_type.clone().unwrap_or_default(),
+            headline: w.headline.clone().unwrap_or_default(),
+            regions: w.regions.clone().unwrap_or_default(),
+            onset: w.onset.clone().unwrap_or_default(),
+            expiry: w.expiry.clone().unwrap_or_default(),
+        })
+        .collect();
+
+    // Get water stations
+    let water_api = irl_water::api::WaterApi::new(verbose, quiet, no_cache)?;
+    let water_stations = water_api.get_stations().await?;
+
+    // Pre-fetch rainfall data for all unique Met stations
+    let mut met_rainfall: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for met_station in MET_STATIONS {
+        if met_rainfall.contains_key(met_station.api_name) {
+            continue;
+        }
+        if let Ok(obs) = met_api.get_observations(met_station.api_name).await {
+            // Sum rainfall from last 6 observations (approximately 6 hours)
+            let recent: Vec<&irl_met::models::Observation> = obs.iter().rev().take(6).collect();
+            let total_rain: f64 = recent
+                .iter()
+                .filter_map(|o| {
+                    o.rainfall
+                        .as_ref()
+                        .and_then(|r| r.trim().parse::<f64>().ok())
+                })
+                .sum();
+            met_rainfall.insert(met_station.api_name.to_string(), total_rain);
+        }
+    }
+
+    // For each water station, find nearest Met station and assess risk
+    let mut risk_stations: Vec<FloodRiskStation> = water_stations
+        .features
+        .iter()
+        .filter_map(|f| {
+            let coords = &f.geometry.coordinates;
+            if coords.len() < 2 {
+                return None;
+            }
+            let station_lon = coords[0];
+            let station_lat = coords[1];
+            let station_name = f.properties.name.clone().unwrap_or_else(|| "Unknown".to_string());
+
+            // County filter using proximity to the county's Met station
+            if let Some(ref county_filter) = county {
+                let county_station = MET_STATIONS
+                    .iter()
+                    .find(|s| s.county.to_lowercase().contains(&county_filter.to_lowercase()));
+                if let Some(cs) = county_station {
+                    let dist = geo::haversine_km(station_lat, station_lon, cs.lat, cs.lon);
+                    if dist > 80.0 {
+                        return None;
+                    }
+                }
+            }
+
+            // Find nearest Met station
+            let (nearest_met, met_dist) = MET_STATIONS
+                .iter()
+                .map(|s| (s, geo::haversine_km(station_lat, station_lon, s.lat, s.lon)))
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .unwrap();
+
+            let rainfall = met_rainfall
+                .get(nearest_met.api_name)
+                .copied()
+                .unwrap_or(0.0);
+
+            let risk_level = if rainfall >= 10.0 {
+                "high"
+            } else if rainfall >= 5.0 {
+                "moderate"
+            } else if rainfall >= 2.0 {
+                "low"
+            } else {
+                return None; // Skip stations with negligible rainfall
+            };
+
+            Some(FloodRiskStation {
+                name: station_name,
+                lat: station_lat,
+                lon: station_lon,
+                nearest_met_station: nearest_met.api_name.to_string(),
+                met_station_distance_km: (met_dist * 10.0).round() / 10.0,
+                rainfall_6h_mm: (rainfall * 10.0).round() / 10.0,
+                risk_level: risk_level.to_string(),
+            })
+        })
+        .collect();
+
+    risk_stations.sort_by(|a, b| {
+        b.rainfall_6h_mm
+            .partial_cmp(&a.rainfall_6h_mm)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let result = FloodRiskResult {
+        warnings,
+        stations: risk_stations,
+    };
+
+    if result.warnings.is_empty() && result.stations.is_empty() {
+        output.print_info("No significant rainfall detected near water monitoring stations.");
+    } else {
+        if !result.warnings.is_empty() {
+            output.print_info(&format!("{} rain/flood warning(s) active", result.warnings.len()));
+        }
+        output.print_info(&format!("{} station(s) with notable rainfall", result.stations.len()));
+    }
 
     output.render_single(&result)?;
 
