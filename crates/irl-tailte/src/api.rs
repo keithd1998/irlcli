@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use irl_core::cache::Cache;
 use irl_core::error::IrlError;
-use irl_core::http::HttpClient;
+use irl_core::http::BrowserLikeClient;
 
 use crate::models::{
     AreaResponse, CategoriesResponse, PropertyValuation, ValuationSearchResponse,
@@ -12,14 +12,14 @@ const BASE_URL: &str = "https://opendata.tailte.ie/api";
 const CACHE_TTL: Duration = Duration::from_secs(86400); // 24 hours
 
 pub struct TailteApi {
-    client: HttpClient,
+    client: BrowserLikeClient,
     cache: Cache,
 }
 
 impl TailteApi {
     pub fn new(verbose: bool, quiet: bool, no_cache: bool) -> Result<Self, IrlError> {
         Ok(Self {
-            client: HttpClient::new(verbose, quiet)?,
+            client: BrowserLikeClient::new(verbose, quiet)?,
             cache: Cache::new(!no_cache),
         })
     }
