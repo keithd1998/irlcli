@@ -60,5 +60,4 @@ irl-geo = { path = "crates/irl-geo" }
 clap = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-colored = { workspace = true }
 toml = { workspace = true }

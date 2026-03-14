@@ -13,8 +13,6 @@ tabled = { workspace = true }
 colored = { workspace = true }
 indicatif = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
-chrono = { workspace = true }
 sha2 = { workspace = true }
 csv = { workspace = true }
 

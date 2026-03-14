@@ -116,26 +116,8 @@ impl OutputConfig {
     }
 
     pub fn render_single<T: Serialize>(&self, item: &T) -> Result<(), io::Error> {
-        match self.format {
-            OutputFormat::Table | OutputFormat::Csv => {
-                // For single items, JSON is a reasonable fallback
-                self.render_json(item)
-            }
-            OutputFormat::Json => self.render_json(item),
-        }
-    }
-}
-
-pub fn coming_soon(module: &str) {
-    let is_tty = io::stdout().is_terminal();
-    if is_tty && std::env::var("NO_COLOR").is_err() {
-        eprintln!(
-            "{} The {} module is coming soon!",
-            "ℹ".blue().bold(),
-            module.yellow().bold()
-        );
-    } else {
-        eprintln!("The {} module is coming soon!", module);
+        // For single items, JSON is always the most readable format
+        self.render_json(item)
     }
 }
 
@@ -183,9 +165,4 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_coming_soon_no_panic() {
-        // Ensure it doesn't panic
-        coming_soon("test-module");
-    }
 }
