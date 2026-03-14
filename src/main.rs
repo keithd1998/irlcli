@@ -159,6 +159,25 @@ enum Commands {
         county: Option<String>,
     },
 
+    /// Check for changes since last run
+    ///
+    /// Compares current data against a saved baseline and reports new items.
+    /// Use --source to specify what to watch. First run saves the baseline,
+    /// subsequent runs show only changes.
+    ///
+    /// Examples:
+    ///   irl watch --source warnings
+    ///   irl watch --source legislation
+    ///   irl watch --source divisions
+    Watch {
+        /// What to watch: warnings, legislation, divisions
+        #[arg(long)]
+        source: String,
+        /// Reset the baseline (treat current data as the new baseline)
+        #[arg(long)]
+        reset: bool,
+    },
+
     /// National snapshot — weather warnings, recent Dáil votes, and latest bills
     ///
     /// A single-call overview of what's happening in Ireland right now.
@@ -339,6 +358,10 @@ async fn main() -> Result<()> {
             lon,
         } => {
             handle_nearby(&output, location, lat, lon, cli.verbose, cli.quiet, cli.no_cache).await?;
+        }
+
+        Commands::Watch { source, reset } => {
+            handle_watch(&output, source, *reset, cli.verbose, cli.quiet, cli.no_cache).await?;
         }
 
         Commands::FloodRisk { county } => {
@@ -919,6 +942,165 @@ async fn handle_flood_risk(
     }
 
     output.render_single(&result)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct WatchResult {
+    source: String,
+    status: String,
+    new_items: Vec<serde_json::Value>,
+    baseline_count: usize,
+    current_count: usize,
+}
+
+async fn handle_watch(
+    output: &OutputConfig,
+    source: &str,
+    reset: bool,
+    verbose: bool,
+    quiet: bool,
+    no_cache: bool,
+) -> Result<()> {
+    use std::fs;
+
+    output.print_header(&format!("Watch: {}", source));
+
+    let watch_dir = irl_core::config::Config::data_dir().join("watch");
+    fs::create_dir_all(&watch_dir)?;
+    let baseline_path = watch_dir.join(format!("{}.json", source));
+
+    // Fetch current data based on source
+    let current_items: Vec<serde_json::Value> = match source {
+        "warnings" => {
+            let met_api = irl_met::api::MetApi::new(verbose, quiet, no_cache)?;
+            let warnings = met_api.get_warnings().await.unwrap_or_default();
+            warnings
+                .iter()
+                .map(|w| serde_json::to_value(w).unwrap_or_default())
+                .collect()
+        }
+        "legislation" => {
+            let api = irl_oireachtas::api::OireachtasApi::new(verbose, quiet, no_cache)?;
+            match api.list_legislation(20, 0).await {
+                Ok(response) => response
+                    .results
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "title": r.bill.short_title_en,
+                            "year": r.bill.bill_year,
+                            "status": r.bill.status,
+                            "bill_no": r.bill.bill_no,
+                        })
+                    })
+                    .collect(),
+                Err(_) => vec![],
+            }
+        }
+        "divisions" => {
+            let api = irl_oireachtas::api::OireachtasApi::new(verbose, quiet, no_cache)?;
+            match api.list_divisions(20, 0).await {
+                Ok(response) => response
+                    .results
+                    .iter()
+                    .map(|r| {
+                        let subject = r.division.as_ref()
+                            .and_then(|d| d.debate.as_ref())
+                            .and_then(|db| db.show_as.clone())
+                            .or_else(|| r.subject.as_ref().and_then(|s| s.show_as.clone()))
+                            .unwrap_or_default();
+                        let date = r.date.clone().or_else(|| {
+                            r.division.as_ref().and_then(|d| d.uri.as_ref()).and_then(|uri| {
+                                uri.split('/').rev().nth(1)
+                                    .filter(|s| s.len() == 10 && s.contains('-'))
+                                    .map(|s| s.to_string())
+                            })
+                        }).unwrap_or_default();
+                        let house = r.house.as_ref().and_then(|h| h.show_as.clone())
+                            .or_else(|| r.division.as_ref().and_then(|d| d.uri.as_ref()).and_then(|uri| {
+                                if uri.contains("/dail/") { Some("Dáil Éireann".to_string()) }
+                                else if uri.contains("/seanad/") { Some("Seanad Éireann".to_string()) }
+                                else { None }
+                            }))
+                            .unwrap_or_default();
+                        serde_json::json!({
+                            "date": date,
+                            "subject": subject,
+                            "house": house,
+                        })
+                    })
+                    .collect(),
+                Err(_) => vec![],
+            }
+        }
+        _ => {
+            output.print_error(&format!(
+                "Unknown source '{}'. Available: warnings, legislation, divisions",
+                source
+            ));
+            return Ok(());
+        }
+    };
+
+    if reset || !baseline_path.exists() {
+        // Save baseline
+        let json = serde_json::to_string_pretty(&current_items)?;
+        fs::write(&baseline_path, json)?;
+
+        let result = WatchResult {
+            source: source.to_string(),
+            status: "baseline_saved".to_string(),
+            new_items: vec![],
+            baseline_count: current_items.len(),
+            current_count: current_items.len(),
+        };
+
+        output.print_info(&format!(
+            "Baseline saved with {} items. Run again to check for changes.",
+            current_items.len()
+        ));
+        output.render_single(&result)?;
+        return Ok(());
+    }
+
+    // Load baseline and diff
+    let baseline_json = fs::read_to_string(&baseline_path)?;
+    let baseline: Vec<serde_json::Value> = serde_json::from_str(&baseline_json)?;
+
+    // Find items in current that are not in baseline
+    let new_items: Vec<serde_json::Value> = current_items
+        .iter()
+        .filter(|item| !baseline.contains(item))
+        .cloned()
+        .collect();
+
+    let status = if new_items.is_empty() {
+        "no_changes"
+    } else {
+        "changes_detected"
+    };
+
+    let result = WatchResult {
+        source: source.to_string(),
+        status: status.to_string(),
+        new_items: new_items.clone(),
+        baseline_count: baseline.len(),
+        current_count: current_items.len(),
+    };
+
+    if new_items.is_empty() {
+        output.print_info("No changes since last check.");
+    } else {
+        output.print_info(&format!("{} new item(s) detected.", new_items.len()));
+    }
+
+    output.render_single(&result)?;
+
+    // Update baseline to current
+    let json = serde_json::to_string_pretty(&current_items)?;
+    fs::write(&baseline_path, json)?;
 
     Ok(())
 }
