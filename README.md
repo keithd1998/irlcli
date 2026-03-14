@@ -1,6 +1,6 @@
 # irl — Irish Public Sector Open Data CLI
 
-A unified command-line tool for accessing Irish public sector open data. Single binary, subcommand-per-source architecture.
+A unified command-line tool for accessing Irish public sector open data. Single binary, subcommand-per-source architecture. Designed to be used by LLMs to answer natural language questions about Ireland — `--format json` returns full, untruncated API data suitable for machine consumption.
 
 ## Quick Start
 
@@ -23,11 +23,20 @@ irl oireachtas members
 # Search CSO statistical tables
 irl cso tables --search "house prices"
 
-# Output as JSON for scripting
+# Output as JSON (full untruncated API data)
 irl oireachtas members --format json
 
 # Output as CSV for spreadsheets
 irl met forecast --location cork --format csv
+
+# Cross-source: what's near Dublin?
+irl nearby --location dublin
+
+# Handles historical constituency names
+irl oireachtas members --constituency "Dublin North Central"
+
+# Fuzzy matching corrects typos
+irl met forecast --location dubln
 ```
 
 ## Data Sources
@@ -44,6 +53,7 @@ irl met forecast --location cork --format csv
 | `water` | OPW Water Levels | None | Station list working |
 | `tailte` | Tailte Éireann (Valuation Office) | None | API under investigation |
 | `geo` | GeoHive / OSi (ArcGIS) | None | FeatureServer URLs needed |
+| `nearby` | Cross-source geographic view | None | Working |
 
 ## Installation
 
@@ -106,16 +116,20 @@ The CLI also respects the `NO_COLOR` environment variable and automatically disa
 irl oireachtas members                                  # All current TDs/Senators
 irl oireachtas members --party "Sinn Féin"              # Filter by party
 irl oireachtas members --constituency "Dublin Central"  # Filter by constituency
+irl oireachtas members --constituency "Dublin North Central"  # Historical names auto-resolve
 irl oireachtas legislation --search "planning"          # Search bills
 irl oireachtas divisions                                # Recent votes
-irl oireachtas questions --member "Mary Lou McDonald"   # Parliamentary questions
+irl oireachtas questions --member "Mary Lou McDonald"   # Parliamentary questions (auto-paginates)
 ```
+
+Filtered queries (party, constituency, member) automatically paginate through all API results to ensure nothing is missed.
 
 ### Met Éireann (Weather)
 
 ```bash
 irl met forecast --location dublin          # Today's observations
 irl met forecast --location galway --hours 6  # Last 6 hours
+irl met forecast --location dubln           # Typos auto-corrected via fuzzy matching
 irl met warnings                            # Active weather warnings
 irl met stations                            # List available stations
 ```
@@ -155,6 +169,28 @@ irl water stations                          # All monitoring stations
 irl water stations --county Galway          # Filter by county
 irl water search "Corrib"                   # Search by name
 ```
+
+### Nearby (Cross-Source)
+
+```bash
+irl nearby --location dublin                # Weather + water stations near Dublin
+irl nearby --location cork                  # Weather + water stations near Cork
+irl nearby --lat 53.35 --lon -6.26          # Custom coordinates
+```
+
+Returns a composite JSON view combining data from multiple sources for a geographic area — weather conditions from the nearest Met Éireann station and the 5 closest OPW water monitoring stations within 50km.
+
+## LLM Integration
+
+This tool is designed to be called by LLMs (like Claude) to answer questions about Irish public data. Key features for LLM usage:
+
+- **`--format json`** returns full, untruncated API data (table output is truncated for human readability, JSON never is)
+- **`--quiet`** suppresses headers and info messages, outputting only data
+- **Fuzzy matching** auto-corrects typos in location names, constituency names, and member names
+- **Historical awareness** maps redistricted constituency names to current equivalents
+- **Auto-pagination** ensures filtered queries return complete results
+- **Cross-source queries** (`irl nearby`) answer geographic questions in a single call
+- **Structured errors** include "Did you mean?" suggestions and actionable next steps
 
 ## Caching
 
