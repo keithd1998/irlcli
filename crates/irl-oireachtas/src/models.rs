@@ -308,11 +308,36 @@ pub struct DivisionRow {
 
 impl DivisionRow {
     pub fn from_result(result: &DivisionResult) -> Self {
+        // Subject: try top-level subject first, fall back to division.debate.showAs
         let subject = result
             .subject
             .as_ref()
             .and_then(|s| s.show_as.clone())
+            .or_else(|| {
+                result
+                    .division
+                    .as_ref()
+                    .and_then(|d| d.debate.as_ref())
+                    .and_then(|db| db.show_as.clone())
+            })
             .unwrap_or_default();
+
+        // Date: try top-level date, fall back to extracting from division URI
+        // URI format: .../division/house/dail/34/2026-03-04/vote_58
+        let date = result.date.clone().or_else(|| {
+            result
+                .division
+                .as_ref()
+                .and_then(|d| d.uri.as_ref())
+                .and_then(|uri| {
+                    uri.split('/')
+                        .rev()
+                        .nth(1)
+                        .filter(|s| s.len() == 10 && s.contains('-'))
+                        .map(|s| s.to_string())
+                })
+        }).unwrap_or_default();
+
         let ta = result
             .tallies
             .as_ref()
@@ -327,14 +352,31 @@ impl DivisionRow {
             .and_then(|v| v.tally)
             .map(|t| t.to_string())
             .unwrap_or_default();
+
+        // House: try top-level, fall back to extracting from URI
         let house = result
             .house
             .as_ref()
             .and_then(|h| h.show_as.clone())
+            .or_else(|| {
+                result
+                    .division
+                    .as_ref()
+                    .and_then(|d| d.uri.as_ref())
+                    .and_then(|uri| {
+                        if uri.contains("/dail/") {
+                            Some("Dáil Éireann".to_string())
+                        } else if uri.contains("/seanad/") {
+                            Some("Seanad Éireann".to_string())
+                        } else {
+                            None
+                        }
+                    })
+            })
             .unwrap_or_default();
 
         Self {
-            date: result.date.clone().unwrap_or_default(),
+            date,
             subject: irl_core::truncate_display(&subject, 60),
             house,
             ta,
