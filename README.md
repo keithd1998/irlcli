@@ -20,23 +20,23 @@ irl met forecast --location dublin
 # List current TDs and Senators
 irl oireachtas members
 
-# Search CSO statistical tables
-irl cso tables --search "house prices"
+# Get a TD's full profile — questions, bills, party, constituency
+irl oireachtas td --name "Paul Murphy"
+
+# National snapshot — warnings, votes, legislation in one call
+irl snapshot
+
+# Cross-source: what's near Galway?
+irl nearby --location galway
 
 # Output as JSON (full untruncated API data)
 irl oireachtas members --format json
 
-# Output as CSV for spreadsheets
-irl met forecast --location cork --format csv
-
-# Cross-source: what's near Dublin?
-irl nearby --location dublin
-
-# Handles historical constituency names
-irl oireachtas members --constituency "Dublin North Central"
-
 # Fuzzy matching corrects typos
 irl met forecast --location dubln
+
+# Historical constituency names auto-resolve
+irl oireachtas members --constituency "Dublin North Central"
 ```
 
 ## Data Sources
@@ -53,7 +53,15 @@ irl met forecast --location dubln
 | `water` | OPW Water Levels | None | Station list working |
 | `tailte` | Tailte Éireann (Valuation Office) | None | API under investigation |
 | `geo` | GeoHive / OSi (ArcGIS) | None | FeatureServer URLs needed |
-| `nearby` | Cross-source geographic view | None | Working |
+
+### Cross-Source Commands
+
+| Command | Sources Combined | What it does |
+|---------|-----------------|--------------|
+| `nearby` | Met + Water + Oireachtas + Property | Weather, TDs, water stations, property stats for a location |
+| `snapshot` | Met + Oireachtas | National overview: warnings, recent votes, latest bills |
+| `flood-risk` | Met + Water | Rainfall near water monitoring stations with risk levels |
+| `watch` | Any | Baseline-and-diff change detection for warnings, legislation, votes |
 
 ## Installation
 
@@ -118,11 +126,14 @@ irl oireachtas members --party "Sinn Féin"              # Filter by party
 irl oireachtas members --constituency "Dublin Central"  # Filter by constituency
 irl oireachtas members --constituency "Dublin North Central"  # Historical names auto-resolve
 irl oireachtas legislation --search "planning"          # Search bills
-irl oireachtas divisions                                # Recent votes
+irl oireachtas divisions                                # Recent votes with debate topics
 irl oireachtas questions --member "Mary Lou McDonald"   # Parliamentary questions (auto-paginates)
+irl oireachtas debates --date 2026-03-05 --chamber dail # Dáil debates with section topics
+irl oireachtas td --name "Paul Murphy"                  # Full TD profile
+irl oireachtas td --name "mcdonald"                     # Fuzzy name matching
 ```
 
-Filtered queries (party, constituency, member) automatically paginate through all API results to ensure nothing is missed.
+The `td` command returns a unified JSON profile: party, constituency, recent questions (full text), and all sponsored bills. Filtered queries automatically paginate through all API results to ensure nothing is missed.
 
 ### Met Éireann (Weather)
 
@@ -142,7 +153,11 @@ irl cso tables --search "population"        # Search tables
 irl cso info CPM01                          # Table metadata
 irl cso query CPM01 --last 12               # Last 12 time periods
 irl cso query CPM01 --dimension "Year=2024" # Filter by dimension
+irl cso local --county Dublin               # County profile (population, house prices)
+irl cso local --county Cork                 # Works for any county
 ```
+
+The `local` command queries multiple CSO tables automatically to build a county statistical profile including Census 2022 population and house price data.
 
 ### Transport
 
@@ -150,6 +165,7 @@ irl cso query CPM01 --dimension "Year=2024" # Filter by dimension
 irl transport departures --stop 767         # Next departures (requires API key)
 irl transport vehicles --route 46a          # Live vehicle positions
 irl transport routes                        # List routes
+irl transport stops --search 8220DB         # Search stops by ID
 ```
 
 ### Property Price Register
@@ -160,7 +176,11 @@ irl property search --county Dublin --year 2024        # Search sales
 irl property search --min 200000 --max 500000          # Price range
 irl property stats --county Dublin --year 2024         # Statistics
 irl property stats --compare Dublin,Cork,Galway        # Compare counties
+irl property trends --county Dublin                    # Year-over-year price trends
+irl property trends --county Dublin --from 2020        # Trends from 2020 onwards
 ```
+
+The `trends` command shows average and median prices by year with percentage changes — useful for answering "are house prices going up?"
 
 ### Water Levels
 
@@ -170,15 +190,28 @@ irl water stations --county Galway          # Filter by county
 irl water search "Corrib"                   # Search by name
 ```
 
-### Nearby (Cross-Source)
+### Cross-Source Commands
 
 ```bash
-irl nearby --location dublin                # Weather + water stations near Dublin
-irl nearby --location cork                  # Weather + water stations near Cork
-irl nearby --lat 53.35 --lon -6.26          # Custom coordinates
-```
+# What's near a location? (weather + TDs + water stations)
+irl nearby --location dublin
+irl nearby --location galway
+irl nearby --lat 51.90 --lon -8.47          # Custom coordinates (Cork city)
 
-Returns a composite JSON view combining data from multiple sources for a geographic area — weather conditions from the nearest Met Éireann station and the 5 closest OPW water monitoring stations within 50km.
+# National overview
+irl snapshot                                # Warnings + recent votes + latest bills
+
+# Flood risk assessment (rainfall × water stations)
+irl flood-risk                              # National
+irl flood-risk --county Galway              # County-filtered
+
+# Watch for changes
+irl watch --source warnings                 # First run saves baseline
+irl watch --source warnings                 # Subsequent runs report new items
+irl watch --source legislation              # Watch for new bills
+irl watch --source divisions                # Watch for new votes
+irl watch --source warnings --reset         # Reset the baseline
+```
 
 ## LLM Integration
 
@@ -187,10 +220,28 @@ This tool is designed to be called by LLMs (like Claude) to answer questions abo
 - **`--format json`** returns full, untruncated API data (table output is truncated for human readability, JSON never is)
 - **`--quiet`** suppresses headers and info messages, outputting only data
 - **Fuzzy matching** auto-corrects typos in location names, constituency names, and member names
-- **Historical awareness** maps redistricted constituency names to current equivalents
-- **Auto-pagination** ensures filtered queries return complete results
-- **Cross-source queries** (`irl nearby`) answer geographic questions in a single call
+- **Historical awareness** maps redistricted constituency names (e.g., "Dublin North-Central") to current equivalents with an explanatory note
+- **Auto-pagination** ensures filtered queries return complete results, not just the first page
+- **TD profiles** (`irl oireachtas td`) give an LLM everything about a member in one call
+- **Cross-source queries** (`nearby`, `snapshot`, `flood-risk`) answer compound questions in a single call
+- **Change detection** (`watch`) lets an LLM check if anything has changed since it last looked
 - **Structured errors** include "Did you mean?" suggestions and actionable next steps
+
+### Example LLM workflow
+
+```
+User: "What's my TD doing about housing?"
+LLM:  1. irl nearby --location dublin --quiet  → find TDs for Dublin
+      2. irl oireachtas td --name "Gary Gannon" --quiet  → get profile
+      → Answer from questions and sponsored bills about housing
+```
+
+Or in a single call:
+```
+User: "What's happening in Ireland today?"
+LLM:  irl snapshot --quiet
+      → Answer from warnings, votes, and legislation
+```
 
 ## Caching
 
