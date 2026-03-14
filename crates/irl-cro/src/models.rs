@@ -3,13 +3,13 @@ use tabled::Tabled;
 
 // -- CRO API response structures --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CompanySearchResponse {
     pub companies: Option<Vec<CompanyResult>>,
     pub total: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CompanyResult {
     pub company_name: Option<String>,
     pub company_number: Option<String>,
@@ -19,7 +19,7 @@ pub struct CompanyResult {
     pub address: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CompanyDetail {
     pub company_name: Option<String>,
     pub company_number: Option<String>,
@@ -32,19 +32,19 @@ pub struct CompanyDetail {
     pub activity: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Director {
     pub name: Option<String>,
     pub appointed: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct FilingsResponse {
     pub filings: Option<Vec<Filing>>,
     pub total: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Filing {
     pub filing_type: Option<String>,
     pub filing_date: Option<String>,
@@ -157,11 +157,7 @@ impl FilingRow {
         Self {
             date: filing.filing_date.clone().unwrap_or_default(),
             filing_type: filing.filing_type.clone().unwrap_or_default(),
-            description: if description.len() > 60 {
-                format!("{}...", &description[..57])
-            } else {
-                description
-            },
+            description: irl_core::truncate_display(&description, 60),
             barcode: filing.barcode.clone().unwrap_or_default(),
         }
     }

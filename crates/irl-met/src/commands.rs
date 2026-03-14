@@ -68,21 +68,23 @@ pub async fn handle_command(
 
             let observations = api.get_observations(station).await?;
 
-            let mut rows: Vec<ObservationRow> = observations
+            let mut obs = observations;
+
+            if let Some(n) = hours {
+                // Keep only the last N entries (most recent observations)
+                let len = obs.len();
+                if *n < len {
+                    obs = obs.split_off(len - n);
+                }
+            }
+
+            let rows: Vec<ObservationRow> = obs
                 .iter()
                 .map(ObservationRow::from_observation)
                 .collect();
 
-            if let Some(n) = hours {
-                // Keep only the last N entries (most recent observations)
-                let len = rows.len();
-                if *n < len {
-                    rows = rows.split_off(len - n);
-                }
-            }
-
             output.print_info(&format!("{} observations", rows.len()));
-            output.render(&rows)?;
+            output.render_full(&rows, &obs)?;
         }
 
         MetCommands::Warnings => {
@@ -98,7 +100,7 @@ pub async fn handle_command(
             let rows: Vec<WarningRow> = warnings.iter().map(WarningRow::from_warning).collect();
 
             output.print_info(&format!("{} active warning(s)", rows.len()));
-            output.render(&rows)?;
+            output.render_full(&rows, &warnings)?;
         }
 
         MetCommands::Stations => {

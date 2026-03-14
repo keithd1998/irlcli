@@ -119,6 +119,30 @@ impl OutputConfig {
         // For single items, JSON is always the most readable format
         self.render_json(item)
     }
+
+    /// Render with dual-path: table uses display rows (truncated), JSON/CSV uses full API data.
+    /// This ensures LLMs get complete untruncated data when using --format json.
+    /// Render with dual-path: table uses display rows (truncated), JSON/CSV uses full API data.
+    /// Both slices must represent the same logical data set and have the same length.
+    pub fn render_full<D: Tabled, F: Serialize>(
+        &self,
+        display_rows: &[D],
+        full_data: &[F],
+    ) -> Result<(), io::Error> {
+        debug_assert_eq!(
+            display_rows.len(),
+            full_data.len(),
+            "render_full: display_rows and full_data must have the same length"
+        );
+        match self.format {
+            OutputFormat::Table => {
+                self.render_table(display_rows);
+                Ok(())
+            }
+            OutputFormat::Json => self.render_json(&full_data),
+            OutputFormat::Csv => self.render_csv(full_data),
+        }
+    }
 }
 
 #[cfg(test)]

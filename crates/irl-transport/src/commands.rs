@@ -25,6 +25,9 @@ pub enum TransportCommands {
         /// Filter by route ID
         #[arg(long)]
         route: Option<String>,
+        /// Maximum number of results (default: 50, use 0 for unlimited)
+        #[arg(long, default_value = "50")]
+        limit: usize,
     },
 
     /// Live vehicle positions
@@ -50,6 +53,9 @@ pub enum TransportCommands {
         /// Search term (matches against stop IDs in real-time data)
         #[arg(long)]
         search: String,
+        /// Maximum number of results (default: 50, use 0 for unlimited)
+        #[arg(long, default_value = "50")]
+        limit: usize,
     },
 
     /// List routes currently active
@@ -77,7 +83,7 @@ pub async fn handle_command(
     let api = TransportApi::new(verbose, quiet, no_cache)?;
 
     match cmd {
-        TransportCommands::Departures { stop, route } => {
+        TransportCommands::Departures { stop, route, limit } => {
             output.print_header("Departures");
             let response = api.get_trip_updates().await?;
             let entities = response.entity.unwrap_or_default();
@@ -109,12 +115,20 @@ pub async fn handle_command(
                 }
             }
 
-            rows.truncate(50);
-            output.print_info(&format!(
-                "{} departures found for stop {}",
-                rows.len(),
-                stop
-            ));
+            let total = rows.len();
+            if *limit > 0 && rows.len() > *limit {
+                rows.truncate(*limit);
+                output.print_info(&format!(
+                    "Showing {} of {} departures for stop {}",
+                    limit, total, stop
+                ));
+            } else {
+                output.print_info(&format!(
+                    "{} departures found for stop {}",
+                    rows.len(),
+                    stop
+                ));
+            }
             output.render(&rows)?;
         }
 
@@ -140,7 +154,7 @@ pub async fn handle_command(
             output.render(&rows)?;
         }
 
-        TransportCommands::Stops { search } => {
+        TransportCommands::Stops { search, limit } => {
             output.print_header("Stops (from real-time data)");
             output.print_info(
                 "Note: Searching stop IDs from real-time feed. \
@@ -186,9 +200,17 @@ pub async fn handle_command(
                 })
                 .collect();
             rows.sort_by(|a, b| a.stop_id.cmp(&b.stop_id));
-            rows.truncate(50);
 
-            output.print_info(&format!("{} stops found matching '{}'", rows.len(), search));
+            let total = rows.len();
+            if *limit > 0 && rows.len() > *limit {
+                rows.truncate(*limit);
+                output.print_info(&format!(
+                    "Showing {} of {} stops matching '{}'",
+                    limit, total, search
+                ));
+            } else {
+                output.print_info(&format!("{} stops found matching '{}'", rows.len(), search));
+            }
             output.render(&rows)?;
         }
 

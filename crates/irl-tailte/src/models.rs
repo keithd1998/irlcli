@@ -3,13 +3,13 @@ use tabled::Tabled;
 
 // -- Tailte Éireann expected response structures --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ValuationSearchResponse {
     pub results: Option<Vec<ValuationResult>>,
     pub total: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ValuationResult {
     pub property_number: Option<String>,
     pub address: Option<String>,
@@ -19,7 +19,7 @@ pub struct ValuationResult {
     pub category: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PropertyValuation {
     pub property_number: Option<String>,
     pub address: Option<String>,
@@ -32,18 +32,18 @@ pub struct PropertyValuation {
     pub effective_date: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AreaResponse {
     pub properties: Option<Vec<ValuationResult>>,
     pub total: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CategoriesResponse {
     pub categories: Option<Vec<PropertyCategory>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PropertyCategory {
     pub code: Option<String>,
     pub description: Option<String>,
@@ -70,11 +70,7 @@ impl ValuationRow {
         let address = result.address.clone().unwrap_or_default();
         Self {
             property_number: result.property_number.clone().unwrap_or_default(),
-            address: if address.len() > 40 {
-                format!("{}...", &address[..37])
-            } else {
-                address
-            },
+            address: irl_core::truncate_display(&address, 40),
             uses: result.uses.clone().unwrap_or_default(),
             valuation: result.valuation.clone().unwrap_or_default(),
             rating_authority: result.rating_authority.clone().unwrap_or_default(),

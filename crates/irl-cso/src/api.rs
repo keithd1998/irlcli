@@ -137,11 +137,7 @@ impl CatalogRow {
             .unwrap_or("-")
             .to_string();
         let title = item.label.clone().unwrap_or_default();
-        let title = if title.len() > 80 {
-            format!("{}...", &title[..77])
-        } else {
-            title
-        };
+        let title = irl_core::truncate_display(&title, 80);
         let updated = item
             .updated
             .as_deref()

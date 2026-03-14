@@ -3,25 +3,25 @@ use tabled::Tabled;
 
 // -- Generic API response wrapper --
 
-#[derive(Debug, Deserialize)]
-pub struct ApiResponse<T> {
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ApiResponse<T: Serialize> {
     pub head: Head,
     pub results: Vec<T>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Head {
     pub counts: serde_json::Value,
 }
 
 // -- Members --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MemberResult {
     pub member: MemberData,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MemberData {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
@@ -42,12 +42,12 @@ pub struct MemberData {
     pub memberships: Option<Vec<MembershipWrapper>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MembershipWrapper {
     pub membership: Membership,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Membership {
     pub house: Option<HouseInfo>,
     pub represents: Option<Vec<RepresentWrapper>>,
@@ -56,7 +56,7 @@ pub struct Membership {
     pub date_range: Option<DateRange>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct HouseInfo {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
@@ -66,12 +66,12 @@ pub struct HouseInfo {
     pub house_no: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RepresentWrapper {
     pub represent: Represent,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Represent {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
@@ -81,12 +81,12 @@ pub struct Represent {
     pub represent_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PartyWrapper {
     pub party: Party,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Party {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
@@ -94,7 +94,7 @@ pub struct Party {
     pub party_code: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DateRange {
     pub start: Option<String>,
     pub end: Option<String>,
@@ -161,14 +161,14 @@ impl MemberRow {
 
 // -- Legislation --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BillResult {
     pub bill: BillData,
     #[serde(rename = "contextDate")]
     pub context_date: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BillData {
     #[serde(rename = "shortTitleEn")]
     pub short_title_en: Option<String>,
@@ -187,19 +187,19 @@ pub struct BillData {
     pub uri: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SponsorWrapper {
     pub sponsor: Sponsor,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Sponsor {
     pub by: Option<SponsorBy>,
     #[serde(rename = "isPrimary")]
     pub is_primary: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SponsorBy {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
@@ -243,7 +243,7 @@ impl BillRow {
 
 // -- Divisions --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DivisionResult {
     pub division: Option<DivisionDetail>,
     pub outcome: Option<String>,
@@ -255,25 +255,25 @@ pub struct DivisionResult {
     pub vote_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DivisionDetail {
     pub uri: Option<String>,
     pub debate: Option<DivisionDebate>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DivisionDebate {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SubjectInfo {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Tallies {
     #[serde(rename = "taVotes")]
     pub ta_votes: Option<VoteGroup>,
@@ -283,7 +283,7 @@ pub struct Tallies {
     pub staon_votes: Option<VoteGroup>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct VoteGroup {
     pub tally: Option<u32>,
     #[serde(rename = "showAs")]
@@ -335,11 +335,7 @@ impl DivisionRow {
 
         Self {
             date: result.date.clone().unwrap_or_default(),
-            subject: if subject.len() > 60 {
-                format!("{}...", &subject[..57])
-            } else {
-                subject
-            },
+            subject: irl_core::truncate_display(&subject, 60),
             house,
             ta,
             nil,
@@ -350,14 +346,14 @@ impl DivisionRow {
 
 // -- Questions --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct QuestionResult {
     pub question: QuestionData,
     #[serde(rename = "contextDate")]
     pub context_date: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct QuestionData {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
@@ -371,7 +367,7 @@ pub struct QuestionData {
     pub house: Option<HouseInfo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct QuestionMember {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
@@ -406,18 +402,14 @@ impl QuestionRow {
                 .as_ref()
                 .and_then(|b| b.show_as.clone())
                 .unwrap_or_default(),
-            topic: if topic.len() > 50 {
-                format!("{}...", &topic[..47])
-            } else {
-                topic
-            },
+            topic: irl_core::truncate_display(&topic, 50),
         }
     }
 }
 
 // -- Debates --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DebateResult {
     #[serde(rename = "contextDate")]
     pub context_date: Option<String>,
@@ -425,7 +417,7 @@ pub struct DebateResult {
     pub debate_record: Option<DebateRecord>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DebateRecord {
     pub date: Option<String>,
     pub chamber: Option<ChamberInfo>,
@@ -433,7 +425,7 @@ pub struct DebateRecord {
     pub sections: Option<Vec<DebateSection>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ChamberInfo {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
@@ -441,7 +433,7 @@ pub struct ChamberInfo {
     pub chamber_code: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DebateCounts {
     #[serde(rename = "questionCount")]
     pub question_count: Option<u32>,
@@ -449,7 +441,7 @@ pub struct DebateCounts {
     pub debate_section_count: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DebateSection {
     #[serde(rename = "showAs")]
     pub show_as: Option<String>,
