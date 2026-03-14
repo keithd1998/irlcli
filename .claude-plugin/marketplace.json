@@ -1,0 +1,14 @@
+{
+  "name": "irl-plugins",
+  "description": "Irish Public Sector Open Data CLI plugins",
+  "plugins": [
+    {
+      "name": "irl",
+      "description": "Access Irish public sector open data via the irl CLI",
+      "source": {
+        "type": "directory",
+        "path": "."
+      }
+    }
+  ]
+}
