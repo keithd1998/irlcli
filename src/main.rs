@@ -2,13 +2,17 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use irl_core::config::Config;
-use irl_core::output::{self, OutputConfig, OutputFormat};
+use irl_core::output::{OutputConfig, OutputFormat};
 use irl_cro::commands::CroCommands;
 use irl_cso::commands::CsoCommands;
+use irl_epa::commands::EpaCommands;
+use irl_geo::commands::GeoCommands;
 use irl_met::commands::MetCommands;
 use irl_oireachtas::commands::OireachtasCommands;
 use irl_property::commands::PropertyCommands;
+use irl_tailte::commands::TailteCommands;
 use irl_transport::commands::TransportCommands;
+use irl_water::commands::WaterCommands;
 
 #[derive(Parser)]
 #[command(
@@ -123,93 +127,6 @@ enum Commands {
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
-    },
-}
-
-// -- Stub subcommands for unimplemented modules --
-
-#[derive(Subcommand)]
-enum EpaCommands {
-    /// Current air quality data
-    AirQuality {
-        #[arg(long)]
-        station: Option<String>,
-    },
-    /// Water quality data
-    WaterQuality {
-        #[arg(long)]
-        catchment: Option<String>,
-    },
-    /// Licensed facilities
-    Facilities {
-        #[arg(long)]
-        county: Option<String>,
-    },
-    /// Emissions data
-    Emissions {
-        #[arg(long)]
-        sector: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum WaterCommands {
-    /// List monitoring stations
-    Stations {
-        #[arg(long)]
-        county: Option<String>,
-    },
-    /// Current water level at a station
-    Level {
-        station_id: String,
-        #[arg(long)]
-        history: Option<String>,
-    },
-    /// Stations with high water levels
-    Alerts,
-    /// Search stations by name
-    Search { query: String },
-}
-
-#[derive(Subcommand)]
-enum TailteCommands {
-    /// Search valuations by address
-    Search {
-        #[arg(long)]
-        address: String,
-    },
-    /// Get valuation details
-    Property { property_number: String },
-    /// List properties in rating authority area
-    Area {
-        #[arg(long)]
-        rating_authority: String,
-    },
-    /// List property categories
-    Categories,
-}
-
-#[derive(Subcommand)]
-enum GeoCommands {
-    /// Fetch boundary data
-    Boundaries {
-        #[arg(long, name = "type")]
-        boundary_type: String,
-    },
-    /// Find what boundary contains a point
-    Search {
-        #[arg(long)]
-        lat: f64,
-        #[arg(long)]
-        lon: f64,
-    },
-    /// List available spatial datasets
-    Datasets,
-    /// Download a dataset
-    Fetch {
-        dataset_id: String,
-        #[arg(long, default_value = "geojson")]
-        format: String,
     },
 }
 
@@ -330,10 +247,46 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
-        Commands::Epa { .. } => output::coming_soon("epa"),
-        Commands::Water { .. } => output::coming_soon("water"),
-        Commands::Tailte { .. } => output::coming_soon("tailte"),
-        Commands::Geo { .. } => output::coming_soon("geo"),
+        Commands::Epa { command } => {
+            irl_epa::commands::handle_command(
+                command,
+                &output,
+                cli.verbose,
+                cli.quiet,
+                cli.no_cache,
+            )
+            .await?;
+        }
+        Commands::Water { command } => {
+            irl_water::commands::handle_command(
+                command,
+                &output,
+                cli.verbose,
+                cli.quiet,
+                cli.no_cache,
+            )
+            .await?;
+        }
+        Commands::Tailte { command } => {
+            irl_tailte::commands::handle_command(
+                command,
+                &output,
+                cli.verbose,
+                cli.quiet,
+                cli.no_cache,
+            )
+            .await?;
+        }
+        Commands::Geo { command } => {
+            irl_geo::commands::handle_command(
+                command,
+                &output,
+                cli.verbose,
+                cli.quiet,
+                cli.no_cache,
+            )
+            .await?;
+        }
     }
 
     Ok(())
