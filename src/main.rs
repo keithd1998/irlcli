@@ -448,7 +448,7 @@ async fn handle_nearby(
                         .map(|r| r.trim())
                         .unwrap_or("?")
                 ),
-            })
+            }),
             Err(_) => None,
         }
     } else {
