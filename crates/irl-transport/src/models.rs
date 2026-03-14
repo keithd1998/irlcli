@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use tabled::Tabled;
 
 // -- GTFS-R JSON response structures --
+// The NTA API returns snake_case field names when using ?format=json
 
 #[derive(Debug, Deserialize)]
 pub struct GtfsResponse {
@@ -11,15 +12,16 @@ pub struct GtfsResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct FeedHeader {
-    #[serde(rename = "gtfsRealtimeVersion")]
+    #[serde(alias = "gtfsRealtimeVersion", alias = "gtfs_realtime_version")]
     pub gtfs_realtime_version: Option<String>,
     pub timestamp: Option<String>,
+    pub incrementality: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct FeedEntity {
     pub id: Option<String>,
-    #[serde(rename = "tripUpdate")]
+    #[serde(alias = "tripUpdate", alias = "trip_update")]
     pub trip_update: Option<TripUpdate>,
     pub vehicle: Option<VehiclePosition>,
 }
@@ -29,7 +31,7 @@ pub struct FeedEntity {
 #[derive(Debug, Deserialize)]
 pub struct TripUpdate {
     pub trip: Option<TripDescriptor>,
-    #[serde(rename = "stopTimeUpdate")]
+    #[serde(alias = "stopTimeUpdate", alias = "stop_time_update")]
     pub stop_time_update: Option<Vec<StopTimeUpdate>>,
     pub vehicle: Option<VehicleDescriptor>,
     pub timestamp: Option<String>,
@@ -37,29 +39,29 @@ pub struct TripUpdate {
 
 #[derive(Debug, Deserialize)]
 pub struct TripDescriptor {
-    #[serde(rename = "tripId")]
+    #[serde(alias = "tripId", alias = "trip_id")]
     pub trip_id: Option<String>,
-    #[serde(rename = "routeId")]
+    #[serde(alias = "routeId", alias = "route_id")]
     pub route_id: Option<String>,
-    #[serde(rename = "directionId")]
+    #[serde(alias = "directionId", alias = "direction_id")]
     pub direction_id: Option<u32>,
-    #[serde(rename = "startTime")]
+    #[serde(alias = "startTime", alias = "start_time")]
     pub start_time: Option<String>,
-    #[serde(rename = "startDate")]
+    #[serde(alias = "startDate", alias = "start_date")]
     pub start_date: Option<String>,
-    #[serde(rename = "scheduleRelationship")]
+    #[serde(alias = "scheduleRelationship", alias = "schedule_relationship")]
     pub schedule_relationship: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct StopTimeUpdate {
-    #[serde(rename = "stopSequence")]
+    #[serde(alias = "stopSequence", alias = "stop_sequence")]
     pub stop_sequence: Option<u32>,
-    #[serde(rename = "stopId")]
+    #[serde(alias = "stopId", alias = "stop_id")]
     pub stop_id: Option<String>,
     pub arrival: Option<StopTimeEvent>,
     pub departure: Option<StopTimeEvent>,
-    #[serde(rename = "scheduleRelationship")]
+    #[serde(alias = "scheduleRelationship", alias = "schedule_relationship")]
     pub schedule_relationship: Option<String>,
 }
 
@@ -83,11 +85,11 @@ pub struct VehiclePosition {
     pub vehicle: Option<VehicleDescriptor>,
     pub position: Option<Position>,
     pub timestamp: Option<String>,
-    #[serde(rename = "currentStopSequence")]
+    #[serde(alias = "currentStopSequence", alias = "current_stop_sequence")]
     pub current_stop_sequence: Option<u32>,
-    #[serde(rename = "stopId")]
+    #[serde(alias = "stopId", alias = "stop_id")]
     pub stop_id: Option<String>,
-    #[serde(rename = "currentStatus")]
+    #[serde(alias = "currentStatus", alias = "current_status")]
     pub current_status: Option<String>,
 }
 
@@ -230,8 +232,8 @@ pub struct StopRow {
 pub struct RouteRow {
     #[tabled(rename = "Route ID")]
     pub route_id: String,
-    #[tabled(rename = "Active Trips")]
-    pub active_trips: String,
+    #[tabled(rename = "Active Vehicles")]
+    pub active_vehicles: String,
 }
 
 #[cfg(test)]
@@ -239,7 +241,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deserialize_vehicle_position() {
+    fn test_deserialize_vehicle_position_snake_case() {
+        // Real API format — snake_case
+        let json = r#"{
+            "header": {
+                "gtfs_realtime_version": "2.0",
+                "incrementality": "FULL_DATASET",
+                "timestamp": "1773504370"
+            },
+            "entity": [{
+                "id": "V1",
+                "vehicle": {
+                    "trip": {
+                        "trip_id": "119662_332",
+                        "start_time": "16:05:00",
+                        "start_date": "20260314",
+                        "schedule_relationship": "SCHEDULED",
+                        "route_id": "119662",
+                        "direction_id": 0
+                    },
+                    "position": {
+                        "latitude": 53.3501778,
+                        "longitude": -6.25059223
+                    },
+                    "timestamp": "1773504356",
+                    "vehicle": {
+                        "id": "4"
+                    }
+                }
+            }]
+        }"#;
+
+        let response: GtfsResponse = serde_json::from_str(json).unwrap();
+        assert!(response.entity.is_some());
+        let entities = response.entity.unwrap();
+        assert_eq!(entities.len(), 1);
+
+        let vp = entities[0].vehicle.as_ref().unwrap();
+        assert_eq!(vp.trip.as_ref().unwrap().route_id.as_deref(), Some("119662"));
+        assert_eq!(vp.vehicle.as_ref().unwrap().id.as_deref(), Some("4"));
+        let pos = vp.position.as_ref().unwrap();
+        assert!((pos.latitude.unwrap() - 53.3501).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_deserialize_vehicle_position_camel_case() {
+        // Alternate camelCase format
         let json = r#"{
             "header": {
                 "gtfsRealtimeVersion": "2.0",
@@ -270,15 +317,10 @@ mod tests {
         }"#;
 
         let response: GtfsResponse = serde_json::from_str(json).unwrap();
-        assert!(response.entity.is_some());
         let entities = response.entity.unwrap();
-        assert_eq!(entities.len(), 1);
-
         let vp = entities[0].vehicle.as_ref().unwrap();
         assert_eq!(vp.trip.as_ref().unwrap().route_id.as_deref(), Some("46A"));
         assert_eq!(vp.vehicle.as_ref().unwrap().id.as_deref(), Some("BUS123"));
-        let pos = vp.position.as_ref().unwrap();
-        assert!((pos.latitude.unwrap() - 53.3498).abs() < 0.001);
     }
 
     #[test]

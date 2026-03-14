@@ -220,7 +220,7 @@ pub async fn handle_command(
                 .into_iter()
                 .map(|(route_id, count)| RouteRow {
                     route_id,
-                    active_trips: count.to_string(),
+                    active_vehicles: count.to_string(),
                 })
                 .collect();
             rows.sort_by(|a, b| a.route_id.cmp(&b.route_id));
