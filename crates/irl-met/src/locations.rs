@@ -116,7 +116,8 @@ pub const STATIONS: &[Station] = &[
 ];
 
 /// Resolve a user-supplied location name to the Met Eireann API station name.
-/// Performs case-insensitive matching against aliases and API names.
+/// Performs case-insensitive matching against aliases and API names,
+/// with fuzzy matching fallback for typos.
 pub fn resolve_location(input: &str) -> Option<&'static str> {
     let lower = input.to_lowercase();
 
@@ -145,7 +146,31 @@ pub fn resolve_location(input: &str) -> Option<&'static str> {
         }
     }
 
+    // Fuzzy match on aliases as last resort
+    let aliases: Vec<&str> = STATIONS.iter().map(|s| s.alias).collect();
+    let matches = irl_core::fuzzy::fuzzy_match(input, &aliases, 0.85);
+    if let Some(best) = matches.first() {
+        for station in STATIONS {
+            if station.alias == best.candidate {
+                return Some(station.api_name);
+            }
+        }
+    }
+
     None
+}
+
+/// Get fuzzy match suggestions for a location name that didn't resolve.
+/// Returns a formatted hint string, or empty if no good matches.
+pub fn suggest_location(input: &str) -> String {
+    let aliases: Vec<&str> = STATIONS.iter().map(|s| s.alias).collect();
+    let api_names: Vec<&str> = STATIONS.iter().map(|s| s.api_name).collect();
+
+    let mut all_candidates = aliases;
+    all_candidates.extend(api_names);
+
+    let matches = irl_core::fuzzy::fuzzy_match(input, &all_candidates, 0.7);
+    irl_core::fuzzy::format_suggestions(&matches)
 }
 
 #[cfg(test)]

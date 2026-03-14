@@ -1,9 +1,11 @@
 use anyhow::Result;
 use clap::Subcommand;
 
+use irl_core::fuzzy;
 use irl_core::output::OutputConfig;
 
 use crate::api::OireachtasApi;
+use crate::constituencies;
 use crate::models::*;
 
 /// Maximum number of results to fetch when auto-paginating for filtered queries.
@@ -145,37 +147,6 @@ where
     Ok(all_results)
 }
 
-/// Helper to filter MemberResult by party/constituency using raw API data.
-fn member_matches(result: &MemberResult, party: &Option<String>, constituency: &Option<String>) -> bool {
-    let membership = result
-        .member
-        .memberships
-        .as_ref()
-        .and_then(|ms| ms.last());
-
-    if let Some(party_filter) = party {
-        let member_party = membership
-            .and_then(|mw| mw.membership.parties.as_ref())
-            .and_then(|ps| ps.last())
-            .and_then(|pw| pw.party.show_as.as_deref())
-            .unwrap_or("");
-        if !member_party.to_lowercase().contains(&party_filter.to_lowercase()) {
-            return false;
-        }
-    }
-    if let Some(const_filter) = constituency {
-        let member_const = membership
-            .and_then(|mw| mw.membership.represents.as_ref())
-            .and_then(|rs| rs.last())
-            .and_then(|rw| rw.represent.show_as.as_deref())
-            .unwrap_or("");
-        if !member_const.to_lowercase().contains(&const_filter.to_lowercase()) {
-            return false;
-        }
-    }
-    true
-}
-
 /// Helper to filter BillResult using raw API data.
 fn bill_matches(
     result: &BillResult,
@@ -222,13 +193,77 @@ pub async fn handle_command(
         } => {
             output.print_header("Members of the Oireachtas");
 
+            // Resolve constituency name (handles historical redistricting)
+            let resolved_constituency = if let Some(const_input) = constituency {
+                let (resolved, was_historical) = constituencies::resolve_constituency(const_input);
+                if was_historical && !resolved.is_empty() {
+                    output.print_info(&format!(
+                        "Note: \"{}\" was redistricted. Searching current constituencies: {}",
+                        const_input,
+                        resolved.join(", ")
+                    ));
+                }
+                if resolved.is_empty() {
+                    // Try fuzzy matching
+                    let suggestions = fuzzy::fuzzy_match(
+                        const_input,
+                        constituencies::CURRENT_CONSTITUENCIES,
+                        0.75,
+                    );
+                    if !suggestions.is_empty() {
+                        output.print_info(&format!(
+                            "No constituency matching \"{}\". {}",
+                            const_input,
+                            fuzzy::format_suggestions(&suggestions)
+                        ));
+                    } else {
+                        output.print_info(&format!(
+                            "No constituency matching \"{}\". Use `irl oireachtas members` to see all constituencies.",
+                            const_input
+                        ));
+                    }
+                }
+                Some(resolved)
+            } else {
+                None
+            };
+
             let has_filter = party.is_some() || constituency.is_some();
 
             let mut results = if has_filter {
-                // Auto-paginate to find all matching members
                 let all = paginate_all(|limit, skip| api.list_members(Some("dail"), limit, skip)).await?;
                 all.into_iter()
-                    .filter(|r| member_matches(r, party, constituency))
+                    .filter(|r| {
+                        // Party filter
+                        if let Some(party_filter) = party {
+                            let member_party = r.member.memberships.as_ref()
+                                .and_then(|ms| ms.last())
+                                .and_then(|mw| mw.membership.parties.as_ref())
+                                .and_then(|ps| ps.last())
+                                .and_then(|pw| pw.party.show_as.as_deref())
+                                .unwrap_or("");
+                            if !member_party.to_lowercase().contains(&party_filter.to_lowercase()) {
+                                return false;
+                            }
+                        }
+                        // Constituency filter (using resolved names)
+                        if let Some(ref resolved) = resolved_constituency {
+                            if resolved.is_empty() {
+                                return false; // No valid constituency to match against
+                            }
+                            let member_const = r.member.memberships.as_ref()
+                                .and_then(|ms| ms.last())
+                                .and_then(|mw| mw.membership.represents.as_ref())
+                                .and_then(|rs| rs.last())
+                                .and_then(|rw| rw.represent.show_as.as_deref())
+                                .unwrap_or("");
+                            let member_lower = member_const.to_lowercase();
+                            if !resolved.iter().any(|c| member_lower.contains(&c.to_lowercase())) {
+                                return false;
+                            }
+                        }
+                        true
+                    })
                     .collect::<Vec<_>>()
             } else {
                 let skip = page * limit;

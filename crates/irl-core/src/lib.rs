@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod config;
 pub mod error;
+pub mod fuzzy;
 pub mod http;
 pub mod output;
 

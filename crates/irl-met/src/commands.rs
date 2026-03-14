@@ -58,10 +58,19 @@ pub async fn handle_command(
     match cmd {
         MetCommands::Forecast { location, hours } => {
             let station = locations::resolve_location(location).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Unknown location '{}'. Run 'irl met stations' to see available locations.",
-                    location
-                )
+                let suggestion = locations::suggest_location(location);
+                if suggestion.is_empty() {
+                    anyhow::anyhow!(
+                        "Unknown location '{}'. Run 'irl met stations' to see available locations.",
+                        location
+                    )
+                } else {
+                    anyhow::anyhow!(
+                        "Unknown location '{}'. {} Run 'irl met stations' to see all locations.",
+                        location,
+                        suggestion
+                    )
+                }
             })?;
 
             output.print_header(&format!("Weather Observations — {}", station));
