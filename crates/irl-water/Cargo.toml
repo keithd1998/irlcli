@@ -1,0 +1,16 @@
+[package]
+name = "irl-water"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+irl-core = { path = "../irl-core" }
+clap = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[features]
+integration-tests = []
