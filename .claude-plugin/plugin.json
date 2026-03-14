@@ -1,0 +1,5 @@
+{
+  "name": "irl",
+  "description": "Access Irish public sector open data via the irl CLI — weather, parliament, statistics, transport, companies, property prices, and more",
+  "version": "0.1.0"
+}
