@@ -246,6 +246,17 @@ pub async fn handle_command(
                 }
             }
 
+            // Get current day of week (0=Mon..6=Sun)
+            let day_of_week = {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                // Jan 1 1970 was a Thursday (3)
+                ((secs / 86400 + 3) % 7) as u32
+            };
+
             let mut rows: Vec<RouteRow> = route_counts
                 .into_iter()
                 .map(|(route_id, count)| {
@@ -255,11 +266,21 @@ pub async fn handle_command(
                         .map(|r| (r.route_short_name.clone(), r.route_long_name.clone()))
                         .unwrap_or_default();
 
+                    let scheduled = gtfs
+                        .as_ref()
+                        .map(|g| g.count_scheduled_trips(&route_id, day_of_week))
+                        .unwrap_or(0);
+
                     RouteRow {
                         route_id,
                         short_name,
                         long_name,
                         active_vehicles: count.to_string(),
+                        scheduled_trips: if scheduled > 0 {
+                            scheduled.to_string()
+                        } else {
+                            String::new()
+                        },
                     }
                 })
                 .collect();

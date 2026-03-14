@@ -240,6 +240,8 @@ pub struct RouteRow {
     pub long_name: String,
     #[tabled(rename = "Active Vehicles")]
     pub active_vehicles: String,
+    #[tabled(rename = "Scheduled Trips")]
+    pub scheduled_trips: String,
 }
 
 #[cfg(test)]
