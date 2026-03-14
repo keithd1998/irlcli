@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Subcommand;
+use serde::Serialize;
 
 use irl_core::output::OutputConfig;
 
@@ -54,6 +55,20 @@ pub enum CsoCommands {
         /// Show only the last N time periods
         #[arg(long)]
         last: Option<u32>,
+    },
+
+    /// County statistical profile
+    ///
+    /// Returns key CSO statistics for a county: population, house prices.
+    /// Queries multiple CSO tables automatically.
+    ///
+    /// Examples:
+    ///   irl cso local --county Dublin
+    ///   irl cso local --county Cork
+    Local {
+        /// County name (e.g., Dublin, Cork, Galway)
+        #[arg(long)]
+        county: String,
     },
 }
 
@@ -123,7 +138,74 @@ pub async fn handle_command(
             output.print_info(&format!("{} data points", rows.len()));
             output.render(&rows)?;
         }
+
+        CsoCommands::Local { county } => {
+            output.print_header(&format!("County Profile: {}", county));
+
+            let mut profile = CountyProfile {
+                county: county.clone(),
+                population: None,
+                house_prices: None,
+            };
+
+            // G0420: Population per County (Census 2022)
+            if let Ok(dataset) = api.fetch_dataset("G0420").await {
+                let county_key = format!("Co. {}", county);
+                let options = UnpackOptions::default()
+                    .with_dimension_filters(&[format!("County={}", county_key)]);
+                let rows = unpack_dataset(&dataset, &options);
+                if let Some(row) = rows.first() {
+                    profile.population = Some(PopulationData {
+                        year: row.period.clone(),
+                        count: row.value.clone(),
+                    });
+                }
+            }
+
+            // HSA06: Average Price of Houses
+            if let Ok(dataset) = api.fetch_dataset("HSA06").await {
+                // HSA06 uses city names: Dublin, Cork, Galway, Limerick, Waterford, Other, National
+                let area = county.to_string();
+                let options = UnpackOptions::default()
+                    .with_dimension_filters(&[format!("Area={}", area)])
+                    .with_last_n(Some(1));
+                let rows = unpack_dataset(&dataset, &options);
+                if !rows.is_empty() {
+                    let prices: Vec<HousePriceData> = rows
+                        .iter()
+                        .map(|r| HousePriceData {
+                            year: r.period.clone(),
+                            category: r.category.clone(),
+                            price: r.value.clone(),
+                        })
+                        .collect();
+                    profile.house_prices = Some(prices);
+                }
+            }
+
+            output.render_single(&profile)?;
+        }
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct CountyProfile {
+    county: String,
+    population: Option<PopulationData>,
+    house_prices: Option<Vec<HousePriceData>>,
+}
+
+#[derive(Debug, Serialize)]
+struct PopulationData {
+    year: String,
+    count: String,
+}
+
+#[derive(Debug, Serialize)]
+struct HousePriceData {
+    year: String,
+    category: String,
+    price: String,
 }
