@@ -3,9 +3,12 @@ use clap::{Parser, Subcommand};
 
 use irl_core::config::Config;
 use irl_core::output::{self, OutputConfig, OutputFormat};
+use irl_cro::commands::CroCommands;
 use irl_cso::commands::CsoCommands;
 use irl_met::commands::MetCommands;
 use irl_oireachtas::commands::OireachtasCommands;
+use irl_property::commands::PropertyCommands;
+use irl_transport::commands::TransportCommands;
 
 #[derive(Parser)]
 #[command(
@@ -124,78 +127,6 @@ enum Commands {
 }
 
 // -- Stub subcommands for unimplemented modules --
-
-#[derive(Subcommand)]
-enum TransportCommands {
-    /// Next departures from a stop
-    Departures {
-        #[arg(long)]
-        stop: String,
-        #[arg(long)]
-        route: Option<String>,
-    },
-    /// Live vehicle positions
-    Vehicles {
-        #[arg(long)]
-        route: String,
-    },
-    /// Search stops by name
-    Stops {
-        #[arg(long)]
-        search: String,
-    },
-    /// List routes
-    Routes {
-        #[arg(long)]
-        operator: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum CroCommands {
-    /// Search companies by name
-    Search {
-        name: String,
-        #[arg(long)]
-        status: Option<String>,
-    },
-    /// Get company details
-    Company { number: String },
-    /// List company filings
-    Filings {
-        number: String,
-        #[arg(long, name = "type")]
-        filing_type: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum PropertyCommands {
-    /// Search property sales
-    Search {
-        #[arg(long)]
-        county: Option<String>,
-        #[arg(long)]
-        year: Option<String>,
-        #[arg(long)]
-        min: Option<f64>,
-        #[arg(long)]
-        max: Option<f64>,
-        #[arg(long)]
-        address: Option<String>,
-    },
-    /// Property price statistics
-    Stats {
-        #[arg(long)]
-        county: Option<String>,
-        #[arg(long)]
-        year: Option<String>,
-        #[arg(long)]
-        compare: Option<String>,
-    },
-    /// Download/refresh local property data
-    Update,
-}
 
 #[derive(Subcommand)]
 enum EpaCommands {
@@ -369,9 +300,36 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
-        Commands::Transport { .. } => output::coming_soon("transport"),
-        Commands::Cro { .. } => output::coming_soon("cro"),
-        Commands::Property { .. } => output::coming_soon("property"),
+        Commands::Transport { command } => {
+            irl_transport::commands::handle_command(
+                command,
+                &output,
+                cli.verbose,
+                cli.quiet,
+                cli.no_cache,
+            )
+            .await?;
+        }
+        Commands::Cro { command } => {
+            irl_cro::commands::handle_command(
+                command,
+                &output,
+                cli.verbose,
+                cli.quiet,
+                cli.no_cache,
+            )
+            .await?;
+        }
+        Commands::Property { command } => {
+            irl_property::commands::handle_command(
+                command,
+                &output,
+                cli.verbose,
+                cli.quiet,
+                cli.no_cache,
+            )
+            .await?;
+        }
         Commands::Epa { .. } => output::coming_soon("epa"),
         Commands::Water { .. } => output::coming_soon("water"),
         Commands::Tailte { .. } => output::coming_soon("tailte"),
