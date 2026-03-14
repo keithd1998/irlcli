@@ -1,11 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use anyhow::Result;
 use clap::Subcommand;
+use serde::Serialize;
 
 use irl_core::output::OutputConfig;
 
 use crate::api::TransportApi;
+use crate::gtfs_static::GtfsData;
 use crate::models::*;
 
 #[derive(Debug, Subcommand)]
@@ -44,13 +46,15 @@ pub enum TransportCommands {
 
     /// Search stops by name or ID
     ///
-    /// Searches real-time data for stop IDs currently in use.
-    /// Note: Full stop name search requires static GTFS data (future feature).
+    /// Searches static GTFS stop data by name or stop ID.
+    /// Downloads GTFS data on first use (cached for 7 days).
     ///
     /// Examples:
+    ///   irl transport stops --search "O'Connell"
+    ///   irl transport stops --search "Connolly Station"
     ///   irl transport stops --search 8220DB
     Stops {
-        /// Search term (matches against stop IDs in real-time data)
+        /// Search term (matches stop name or ID)
         #[arg(long)]
         search: String,
         /// Maximum number of results (default: 50, use 0 for unlimited)
@@ -60,17 +64,34 @@ pub enum TransportCommands {
 
     /// List routes currently active
     ///
-    /// Lists route IDs found in real-time vehicle position data.
-    /// Note: Full route details require static GTFS data (future feature).
+    /// Lists routes from real-time vehicle data, enriched with names
+    /// from static GTFS data.
     ///
     /// Examples:
     ///   irl transport routes
-    ///   irl transport routes --operator dublin-bus
+    ///   irl transport routes --search 46A
     Routes {
-        /// Filter hint (matched against route IDs; full operator filtering requires static data)
+        /// Filter by route name or ID (case-insensitive substring)
         #[arg(long)]
-        operator: Option<String>,
+        search: Option<String>,
     },
+
+    /// Download/refresh GTFS static data (stops and routes)
+    ///
+    /// Downloads the latest GTFS schedule data from Transport for Ireland.
+    /// This is done automatically on first use, but you can force a refresh.
+    ///
+    /// Examples:
+    ///   irl transport gtfs-update
+    GtfsUpdate,
+}
+
+#[derive(Debug, Serialize)]
+struct StopSearchResult {
+    stop_id: String,
+    stop_name: String,
+    lat: f64,
+    lon: f64,
 }
 
 pub async fn handle_command(
@@ -80,7 +101,64 @@ pub async fn handle_command(
     quiet: bool,
     no_cache: bool,
 ) -> Result<()> {
+    match cmd {
+        TransportCommands::GtfsUpdate => {
+            output.print_header("GTFS Static Data Update");
+            GtfsData::download(verbose, quiet).await?;
+            let data = GtfsData::load(verbose, quiet).await?;
+            output.print_info(&format!(
+                "Loaded {} stops and {} routes",
+                data.stops.len(),
+                data.routes.len()
+            ));
+            return Ok(());
+        }
+
+        TransportCommands::Stops { search, limit } => {
+            output.print_header("Stop Search");
+
+            let gtfs = GtfsData::load(verbose, quiet).await?;
+
+            // Search by name and ID
+            let lower = search.to_lowercase();
+            let mut results: Vec<StopSearchResult> = gtfs
+                .stops
+                .iter()
+                .filter(|s| {
+                    s.stop_name.to_lowercase().contains(&lower)
+                        || s.stop_id.to_lowercase().contains(&lower)
+                })
+                .map(|s| StopSearchResult {
+                    stop_id: s.stop_id.clone(),
+                    stop_name: s.stop_name.clone(),
+                    lat: s.stop_lat,
+                    lon: s.stop_lon,
+                })
+                .collect();
+
+            let total = results.len();
+            if *limit > 0 && results.len() > *limit {
+                results.truncate(*limit);
+                output.print_info(&format!(
+                    "Showing {} of {} stops matching '{}'",
+                    limit, total, search
+                ));
+            } else {
+                output.print_info(&format!("{} stops found matching '{}'", results.len(), search));
+            }
+
+            output.render_single(&results)?;
+            return Ok(());
+        }
+
+        _ => {}
+    }
+
+    // Commands that need the real-time API
     let api = TransportApi::new(verbose, quiet, no_cache)?;
+
+    // Try to load GTFS for route name enrichment (non-fatal if unavailable)
+    let gtfs = GtfsData::load(verbose, true).await.ok();
 
     match cmd {
         TransportCommands::Departures { stop, route, limit } => {
@@ -154,73 +232,8 @@ pub async fn handle_command(
             output.render(&rows)?;
         }
 
-        TransportCommands::Stops { search, limit } => {
-            output.print_header("Stops (from real-time data)");
-            output.print_info(
-                "Note: Searching stop IDs from real-time feed. \
-                 Full stop name search requires static GTFS data (future feature).",
-            );
-
-            let response = api.get_trip_updates().await?;
-            let entities = response.entity.unwrap_or_default();
-
-            let mut stop_routes: HashMap<String, HashSet<String>> = HashMap::new();
-            for entity in &entities {
-                if let Some(tu) = &entity.trip_update {
-                    let route_id = tu
-                        .trip
-                        .as_ref()
-                        .and_then(|t| t.route_id.clone())
-                        .unwrap_or_default();
-
-                    if let Some(updates) = &tu.stop_time_update {
-                        for stu in updates {
-                            if let Some(stop_id) = &stu.stop_id {
-                                if stop_id.to_lowercase().contains(&search.to_lowercase()) {
-                                    stop_routes
-                                        .entry(stop_id.clone())
-                                        .or_default()
-                                        .insert(route_id.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let mut rows: Vec<StopRow> = stop_routes
-                .into_iter()
-                .map(|(stop_id, routes)| {
-                    let mut route_list: Vec<String> = routes.into_iter().collect();
-                    route_list.sort();
-                    StopRow {
-                        stop_id,
-                        routes: route_list.join(", "),
-                    }
-                })
-                .collect();
-            rows.sort_by(|a, b| a.stop_id.cmp(&b.stop_id));
-
-            let total = rows.len();
-            if *limit > 0 && rows.len() > *limit {
-                rows.truncate(*limit);
-                output.print_info(&format!(
-                    "Showing {} of {} stops matching '{}'",
-                    limit, total, search
-                ));
-            } else {
-                output.print_info(&format!("{} stops found matching '{}'", rows.len(), search));
-            }
-            output.render(&rows)?;
-        }
-
-        TransportCommands::Routes { operator } => {
-            output.print_header("Active Routes (from real-time data)");
-            output.print_info(
-                "Note: Route IDs from real-time vehicle feed. \
-                 Full route details and operator filtering require static GTFS data (future feature).",
-            );
-
+        TransportCommands::Routes { search } => {
+            output.print_header("Active Routes");
             let response = api.get_vehicle_positions().await?;
             let entities = response.entity.unwrap_or_default();
 
@@ -228,11 +241,6 @@ pub async fn handle_command(
             for entity in &entities {
                 if let Some(vp) = &entity.vehicle {
                     if let Some(route_id) = vp.trip.as_ref().and_then(|t| t.route_id.clone()) {
-                        if let Some(op_filter) = operator {
-                            if !route_id.to_lowercase().contains(&op_filter.to_lowercase()) {
-                                continue;
-                            }
-                        }
                         *route_counts.entry(route_id).or_insert(0) += 1;
                     }
                 }
@@ -240,16 +248,40 @@ pub async fn handle_command(
 
             let mut rows: Vec<RouteRow> = route_counts
                 .into_iter()
-                .map(|(route_id, count)| RouteRow {
-                    route_id,
-                    active_vehicles: count.to_string(),
+                .map(|(route_id, count)| {
+                    let (short_name, long_name) = gtfs
+                        .as_ref()
+                        .and_then(|g| g.get_route(&route_id))
+                        .map(|r| (r.route_short_name.clone(), r.route_long_name.clone()))
+                        .unwrap_or_default();
+
+                    RouteRow {
+                        route_id,
+                        short_name,
+                        long_name,
+                        active_vehicles: count.to_string(),
+                    }
                 })
                 .collect();
-            rows.sort_by(|a, b| a.route_id.cmp(&b.route_id));
+
+            // Apply search filter on names
+            if let Some(query) = search {
+                let lower = query.to_lowercase();
+                rows.retain(|r| {
+                    r.route_id.to_lowercase().contains(&lower)
+                        || r.short_name.to_lowercase().contains(&lower)
+                        || r.long_name.to_lowercase().contains(&lower)
+                });
+            }
+
+            rows.sort_by(|a, b| a.short_name.cmp(&b.short_name));
 
             output.print_info(&format!("{} active routes found", rows.len()));
             output.render(&rows)?;
         }
+
+        // Already handled above
+        TransportCommands::Stops { .. } | TransportCommands::GtfsUpdate => unreachable!(),
     }
 
     Ok(())

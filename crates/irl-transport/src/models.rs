@@ -224,6 +224,8 @@ impl VehicleRow {
 pub struct StopRow {
     #[tabled(rename = "Stop ID")]
     pub stop_id: String,
+    #[tabled(rename = "Name")]
+    pub name: String,
     #[tabled(rename = "Routes")]
     pub routes: String,
 }
@@ -232,6 +234,10 @@ pub struct StopRow {
 pub struct RouteRow {
     #[tabled(rename = "Route ID")]
     pub route_id: String,
+    #[tabled(rename = "Name")]
+    pub short_name: String,
+    #[tabled(rename = "Description")]
+    pub long_name: String,
     #[tabled(rename = "Active Vehicles")]
     pub active_vehicles: String,
 }
