@@ -90,7 +90,7 @@ impl OutputConfig {
     }
 
     pub fn render_json<T: Serialize>(&self, data: &T) -> Result<(), io::Error> {
-        let json = serde_json::to_string_pretty(data).map_err(|e| io::Error::other(e))?;
+        let json = serde_json::to_string_pretty(data).map_err(io::Error::other)?;
         println!("{}", json);
         Ok(())
     }
@@ -98,7 +98,7 @@ impl OutputConfig {
     pub fn render_csv<T: Serialize>(&self, items: &[T]) -> Result<(), io::Error> {
         let mut writer = csv::Writer::from_writer(io::stdout());
         for item in items {
-            writer.serialize(item).map_err(|e| io::Error::other(e))?;
+            writer.serialize(item).map_err(io::Error::other)?;
         }
         writer.flush()?;
         Ok(())

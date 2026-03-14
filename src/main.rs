@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 
 use irl_core::config::Config;
 use irl_core::output::{self, OutputConfig, OutputFormat};
+use irl_cso::commands::CsoCommands;
+use irl_met::commands::MetCommands;
 use irl_oireachtas::commands::OireachtasCommands;
 
 #[derive(Parser)]
@@ -60,7 +62,7 @@ enum Commands {
         command: OireachtasCommands,
     },
 
-    /// Met Éireann — weather forecasts, warnings, and station data
+    /// Met Éireann — weather observations, warnings, and station data
     Met {
         #[command(subcommand)]
         command: MetCommands,
@@ -122,44 +124,6 @@ enum Commands {
 }
 
 // -- Stub subcommands for unimplemented modules --
-
-#[derive(Subcommand)]
-enum MetCommands {
-    /// Get weather forecast for a location
-    Forecast {
-        #[arg(long)]
-        lat: Option<f64>,
-        #[arg(long)]
-        lon: Option<f64>,
-        #[arg(long)]
-        location: Option<String>,
-        #[arg(long)]
-        hours: Option<u32>,
-    },
-    /// View current weather warnings
-    Warnings,
-    /// List Met Éireann stations
-    Stations,
-}
-
-#[derive(Subcommand)]
-enum CsoCommands {
-    /// List available statistical tables
-    Tables {
-        #[arg(long)]
-        search: Option<String>,
-    },
-    /// Show table metadata
-    Info { table_code: String },
-    /// Query table data
-    Query {
-        table_code: String,
-        #[arg(long)]
-        dimension: Vec<String>,
-        #[arg(long)]
-        last: Option<u32>,
-    },
-}
 
 #[derive(Subcommand)]
 enum TransportCommands {
@@ -385,9 +349,26 @@ async fn main() -> Result<()> {
             }
         },
 
-        // Stub handlers for unimplemented modules
-        Commands::Met { .. } => output::coming_soon("met"),
-        Commands::Cso { .. } => output::coming_soon("cso"),
+        Commands::Met { command } => {
+            irl_met::commands::handle_command(
+                command,
+                &output,
+                cli.verbose,
+                cli.quiet,
+                cli.no_cache,
+            )
+            .await?;
+        }
+        Commands::Cso { command } => {
+            irl_cso::commands::handle_command(
+                command,
+                &output,
+                cli.verbose,
+                cli.quiet,
+                cli.no_cache,
+            )
+            .await?;
+        }
         Commands::Transport { .. } => output::coming_soon("transport"),
         Commands::Cro { .. } => output::coming_soon("cro"),
         Commands::Property { .. } => output::coming_soon("property"),
