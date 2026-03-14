@@ -9,6 +9,10 @@ pub struct Station {
     pub api_name: &'static str,
     /// County for display purposes
     pub county: &'static str,
+    /// Latitude (WGS84)
+    pub lat: f64,
+    /// Longitude (WGS84)
+    pub lon: f64,
 }
 
 /// All known stations with their aliases and API names.
@@ -17,106 +21,147 @@ pub const STATIONS: &[Station] = &[
         alias: "dublin",
         api_name: "Dublin Airport",
         county: "Dublin",
+        lat: 53.4264,
+        lon: -6.2499,
     },
     Station {
         alias: "cork",
         api_name: "Cork Airport",
         county: "Cork",
+        lat: 51.8413,
+        lon: -8.4911,
     },
     Station {
         alias: "galway",
         api_name: "Athenry",
         county: "Galway",
+        lat: 53.2964,
+        lon: -8.7483,
     },
     Station {
         alias: "limerick",
         api_name: "Shannon Airport",
         county: "Clare/Limerick",
+        lat: 52.7019,
+        lon: -8.9246,
     },
     Station {
         alias: "waterford",
         api_name: "Johnstown Castle",
         county: "Wexford/Waterford",
+        lat: 52.2942,
+        lon: -6.4969,
     },
     Station {
         alias: "belfast",
         api_name: "Malin Head",
         county: "Donegal",
+        lat: 55.3717,
+        lon: -7.3392,
     },
     Station {
         alias: "killarney",
         api_name: "Valentia Observatory",
         county: "Kerry",
+        lat: 51.9381,
+        lon: -10.2411,
     },
     Station {
         alias: "sligo",
         api_name: "Markree",
         county: "Sligo",
+        lat: 54.1575,
+        lon: -8.4575,
     },
     Station {
         alias: "athlone",
         api_name: "Mullingar",
         county: "Westmeath",
+        lat: 53.5361,
+        lon: -7.3617,
     },
     Station {
         alias: "letterkenny",
         api_name: "Malin Head",
         county: "Donegal",
+        lat: 55.3717,
+        lon: -7.3392,
     },
     Station {
         alias: "wexford",
         api_name: "Johnstown Castle",
         county: "Wexford",
+        lat: 52.2942,
+        lon: -6.4969,
     },
     Station {
         alias: "dundalk",
         api_name: "Casement Aerodrome",
         county: "Dublin/Louth",
+        lat: 53.3017,
+        lon: -6.4494,
     },
     Station {
         alias: "drogheda",
         api_name: "Casement Aerodrome",
         county: "Dublin/Louth",
+        lat: 53.3017,
+        lon: -6.4494,
     },
     Station {
         alias: "kilkenny",
         api_name: "Kilkenny",
         county: "Kilkenny",
+        lat: 52.6541,
+        lon: -7.2448,
     },
     Station {
         alias: "ennis",
         api_name: "Shannon Airport",
         county: "Clare",
+        lat: 52.7019,
+        lon: -8.9246,
     },
     Station {
         alias: "tralee",
         api_name: "Valentia Observatory",
         county: "Kerry",
+        lat: 51.9381,
+        lon: -10.2411,
     },
     Station {
         alias: "carlow",
         api_name: "Oak Park",
         county: "Carlow",
+        lat: 52.8600,
+        lon: -6.9150,
     },
     Station {
         alias: "tullamore",
         api_name: "Mullingar",
         county: "Westmeath/Offaly",
+        lat: 53.5361,
+        lon: -7.3617,
     },
     Station {
         alias: "derry",
         api_name: "Malin Head",
         county: "Donegal",
+        lat: 55.3717,
+        lon: -7.3392,
     },
     Station {
         alias: "newry",
         api_name: "Casement Aerodrome",
         county: "Dublin",
+        lat: 53.3017,
+        lon: -6.4494,
     },
 ];
 
 /// Resolve a user-supplied location name to the Met Eireann API station name.
-/// Performs case-insensitive matching against aliases and API names.
+/// Performs case-insensitive matching against aliases and API names,
+/// with fuzzy matching fallback for typos.
 pub fn resolve_location(input: &str) -> Option<&'static str> {
     let lower = input.to_lowercase();
 
@@ -145,7 +190,31 @@ pub fn resolve_location(input: &str) -> Option<&'static str> {
         }
     }
 
+    // Fuzzy match on aliases as last resort
+    let aliases: Vec<&str> = STATIONS.iter().map(|s| s.alias).collect();
+    let matches = irl_core::fuzzy::fuzzy_match(input, &aliases, 0.85);
+    if let Some(best) = matches.first() {
+        for station in STATIONS {
+            if station.alias == best.candidate {
+                return Some(station.api_name);
+            }
+        }
+    }
+
     None
+}
+
+/// Get fuzzy match suggestions for a location name that didn't resolve.
+/// Returns a formatted hint string, or empty if no good matches.
+pub fn suggest_location(input: &str) -> String {
+    let aliases: Vec<&str> = STATIONS.iter().map(|s| s.alias).collect();
+    let api_names: Vec<&str> = STATIONS.iter().map(|s| s.api_name).collect();
+
+    let mut all_candidates = aliases;
+    all_candidates.extend(api_names);
+
+    let matches = irl_core::fuzzy::fuzzy_match(input, &all_candidates, 0.7);
+    irl_core::fuzzy::format_suggestions(&matches)
 }
 
 #[cfg(test)]

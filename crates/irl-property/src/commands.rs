@@ -103,7 +103,7 @@ pub async fn handle_command(
 
             let rows: Vec<PropertyRow> = results.iter().map(PropertyRow::from_sale).collect();
             output.print_info(&format!("{} properties found", rows.len()));
-            output.render(&rows)?;
+            output.render_full(&rows, &results)?;
         }
 
         PropertyCommands::Stats {

@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 
 use irl_core::config::Config;
+use irl_core::geo;
 use irl_core::output::{OutputConfig, OutputFormat};
 use irl_cro::commands::CroCommands;
 use irl_cso::commands::CsoCommands;
@@ -121,6 +123,26 @@ enum Commands {
     Geo {
         #[command(subcommand)]
         command: GeoCommands,
+    },
+
+    /// What's near a location — combines weather, water, and more
+    ///
+    /// Shows data from multiple sources for a geographic area.
+    /// Use --location for a named place or --lat/--lon for coordinates.
+    ///
+    /// Examples:
+    ///   irl nearby --location dublin
+    ///   irl nearby --lat 53.35 --lon -6.26
+    Nearby {
+        /// Location name (e.g., dublin, cork, galway)
+        #[arg(long)]
+        location: Option<String>,
+        /// Latitude (WGS84)
+        #[arg(long)]
+        lat: Option<f64>,
+        /// Longitude (WGS84)
+        #[arg(long, allow_hyphen_values = true)]
+        lon: Option<f64>,
     },
 
     /// Manage irl configuration
@@ -287,7 +309,205 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+
+        Commands::Nearby {
+            location,
+            lat,
+            lon,
+        } => {
+            handle_nearby(&output, location, lat, lon, cli.verbose, cli.quiet, cli.no_cache).await?;
+        }
     }
+
+    Ok(())
+}
+
+/// Cross-source "nearby" handler — combines weather, water, and other data.
+#[derive(Debug, Serialize)]
+struct NearbyResult {
+    location: geo::Location,
+    weather: Option<NearbyWeather>,
+    water_stations: Vec<NearbyWaterStation>,
+}
+
+#[derive(Debug, Serialize)]
+struct NearbyWeather {
+    station: String,
+    distance_km: f64,
+    temperature: String,
+    weather: String,
+    wind: String,
+    rainfall: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NearbyWaterStation {
+    name: String,
+    distance_km: f64,
+}
+
+async fn handle_nearby(
+    output: &OutputConfig,
+    location: &Option<String>,
+    lat: &Option<f64>,
+    lon: &Option<f64>,
+    verbose: bool,
+    quiet: bool,
+    no_cache: bool,
+) -> Result<()> {
+    use irl_met::locations::STATIONS;
+
+    output.print_header("Nearby — Cross-Source View");
+
+    // Resolve location to coordinates
+    let (center_lat, center_lon, location_name) = if let Some(loc_name) = location {
+        // Find coordinates from Met station aliases
+        let station = STATIONS
+            .iter()
+            .find(|s| s.alias == loc_name.to_lowercase())
+            .or_else(|| {
+                STATIONS
+                    .iter()
+                    .find(|s| s.api_name.to_lowercase() == loc_name.to_lowercase())
+            })
+            .or_else(|| {
+                // Fuzzy match
+                let aliases: Vec<&str> = STATIONS.iter().map(|s| s.alias).collect();
+                let matches = irl_core::fuzzy::fuzzy_match(loc_name, &aliases, 0.8);
+                matches.first().and_then(|m| {
+                    STATIONS.iter().find(|s| s.alias == m.candidate)
+                })
+            });
+
+        match station {
+            Some(s) => (s.lat, s.lon, loc_name.clone()),
+            None => {
+                output.print_error(&format!(
+                    "Unknown location '{}'. Use `irl met stations` to see available locations, \
+                     or use --lat and --lon for custom coordinates.",
+                    loc_name
+                ));
+                return Ok(());
+            }
+        }
+    } else if let (Some(lat_val), Some(lon_val)) = (lat, lon) {
+        (*lat_val, *lon_val, format!("{:.4}, {:.4}", lat_val, lon_val))
+    } else {
+        output.print_error(
+            "Specify --location <name> or --lat <LAT> --lon <LON>",
+        );
+        return Ok(());
+    };
+
+    let loc = geo::Location {
+        name: location_name.clone(),
+        lat: center_lat,
+        lon: center_lon,
+    };
+
+    output.print_info(&format!(
+        "Location: {} ({:.4}, {:.4})",
+        location_name, center_lat, center_lon
+    ));
+
+    // Find nearest Met station and get weather
+    let mut station_distances: Vec<(&irl_met::locations::Station, f64)> = STATIONS
+        .iter()
+        .map(|s| (s, geo::haversine_km(center_lat, center_lon, s.lat, s.lon)))
+        .collect();
+    station_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    station_distances.dedup_by(|a, b| a.0.api_name == b.0.api_name);
+
+    let nearest_station = station_distances.first().map(|(s, _)| *s);
+
+    let weather = if let Some(station) = nearest_station {
+        let dist = geo::haversine_km(center_lat, center_lon, station.lat, station.lon);
+        let met_api = irl_met::api::MetApi::new(verbose, quiet, no_cache)?;
+        match met_api.get_observations(station.api_name).await {
+            Ok(obs) => obs.last().map(|latest| NearbyWeather {
+                station: station.api_name.to_string(),
+                distance_km: (dist * 10.0).round() / 10.0,
+                temperature: format!(
+                    "{}°C",
+                    latest.temperature.as_deref().unwrap_or("?")
+                ),
+                weather: latest
+                    .weather_description
+                    .clone()
+                    .unwrap_or_default(),
+                wind: format!(
+                    "{} km/h {}",
+                    latest.wind_speed.as_deref().unwrap_or("?"),
+                    latest.cardinal_wind_direction.as_deref().unwrap_or("")
+                ),
+                rainfall: format!(
+                    "{} mm",
+                    latest
+                        .rainfall
+                        .as_ref()
+                        .map(|r| r.trim())
+                        .unwrap_or("?")
+                ),
+            }),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    // Find nearby water monitoring stations
+    let water_stations = match irl_water::api::WaterApi::new(verbose, quiet, no_cache) {
+        Ok(water_api) => match water_api.get_stations().await {
+            Ok(fc) => {
+                let mut nearby: Vec<NearbyWaterStation> = fc
+                    .features
+                    .iter()
+                    .filter_map(|f| {
+                        let coords = &f.geometry.coordinates;
+                        if coords.len() >= 2 {
+                            let station_lon = coords[0];
+                            let station_lat = coords[1];
+                            let dist =
+                                geo::haversine_km(center_lat, center_lon, station_lat, station_lon);
+                            if dist < 50.0 {
+                                let name = f
+                                    .properties
+                                    .name
+                                    .clone()
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                Some(NearbyWaterStation {
+                                    name,
+                                    distance_km: (dist * 10.0).round() / 10.0,
+                                })
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                nearby.sort_by(|a, b| {
+                    a.distance_km
+                        .partial_cmp(&b.distance_km)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                nearby.truncate(5);
+                nearby
+            }
+            Err(_) => vec![],
+        },
+        Err(_) => vec![],
+    };
+
+    let result = NearbyResult {
+        location: loc,
+        weather,
+        water_stations,
+    };
+
+    // Always output as JSON for this cross-source command
+    output.render_single(&result)?;
 
     Ok(())
 }

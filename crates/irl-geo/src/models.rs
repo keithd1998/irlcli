@@ -3,7 +3,7 @@ use tabled::Tabled;
 
 // -- ArcGIS REST API response structures --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct QueryResponse {
     pub features: Option<Vec<ArcGisFeature>>,
     #[serde(rename = "objectIdFieldName")]
@@ -13,13 +13,13 @@ pub struct QueryResponse {
     pub fields: Option<Vec<FieldDef>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ArcGisFeature {
     pub attributes: Option<serde_json::Value>,
     pub geometry: Option<ArcGisGeometry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ArcGisGeometry {
     pub x: Option<f64>,
     pub y: Option<f64>,
@@ -27,7 +27,7 @@ pub struct ArcGisGeometry {
     pub paths: Option<Vec<Vec<Vec<f64>>>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct FieldDef {
     pub name: Option<String>,
     #[serde(rename = "type")]
@@ -35,7 +35,7 @@ pub struct FieldDef {
     pub alias: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ServiceInfo {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -44,7 +44,7 @@ pub struct ServiceInfo {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ServicesResponse {
     pub services: Option<Vec<ServiceInfo>>,
 }
@@ -109,11 +109,7 @@ impl DatasetRow {
         Self {
             name: service.name.clone().unwrap_or_default(),
             service_type: service.service_type.clone().unwrap_or_default(),
-            description: if description.len() > 50 {
-                format!("{}...", &description[..47])
-            } else {
-                description
-            },
+            description: irl_core::truncate_display(&description, 50),
         }
     }
 }

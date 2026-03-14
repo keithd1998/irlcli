@@ -32,11 +32,7 @@ pub struct PropertyRow {
 
 impl PropertyRow {
     pub fn from_sale(sale: &PropertySale) -> Self {
-        let address = if sale.address.len() > 40 {
-            format!("{}...", &sale.address[..37])
-        } else {
-            sale.address.clone()
-        };
+        let address = irl_core::truncate_display(&sale.address, 40);
 
         Self {
             date: sale.date.clone(),

@@ -75,7 +75,7 @@ pub async fn handle_command(
                     let rows: Vec<CompanyRow> =
                         companies.iter().map(CompanyRow::from_result).collect();
                     output.print_info(&format!("{} companies found", rows.len()));
-                    output.render(&rows)?;
+                    output.render_full(&rows, &companies)?;
                 }
                 Err(e) => {
                     output.print_error(&format!(
@@ -122,7 +122,7 @@ pub async fn handle_command(
                         rows.len(),
                         number
                     ));
-                    output.render(&rows)?;
+                    output.render_full(&rows, &filings)?;
                 }
                 Err(e) => {
                     output.print_error(&format!(

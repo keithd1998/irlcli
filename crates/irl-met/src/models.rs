@@ -127,11 +127,7 @@ impl WarningRow {
         Self {
             level: w.level.clone().unwrap_or_default(),
             warning_type: w.warning_type.clone().unwrap_or_default(),
-            headline: if headline.len() > 60 {
-                format!("{}...", &headline[..57])
-            } else {
-                headline
-            },
+            headline: irl_core::truncate_display(&headline, 60),
             severity: w.severity.clone().unwrap_or_default(),
             onset: w.onset.clone().unwrap_or_default(),
             expiry: w.expiry.clone().unwrap_or_default(),

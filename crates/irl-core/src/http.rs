@@ -192,6 +192,110 @@ impl HttpClient {
     }
 }
 
+/// HTTP client with realistic browser headers and cookie support.
+/// Useful for accessing sites behind basic Cloudflare protection
+/// that block requests from non-browser user agents.
+pub struct BrowserLikeClient {
+    client: Client,
+    verbose: bool,
+    quiet: bool,
+}
+
+impl BrowserLikeClient {
+    pub fn new(verbose: bool, quiet: bool) -> Result<Self, IrlError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            ),
+        );
+        headers.insert("Accept", HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8"));
+        headers.insert("Accept-Language", HeaderValue::from_static("en-IE,en;q=0.9,ga;q=0.8"));
+        headers.insert("Accept-Encoding", HeaderValue::from_static("gzip, deflate, br"));
+        headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
+
+        let client = Client::builder()
+            .default_headers(headers)
+            .cookie_store(true)
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .map_err(IrlError::Http)?;
+
+        Ok(Self {
+            client,
+            verbose,
+            quiet,
+        })
+    }
+
+    pub async fn get_text(&self, url: &str) -> Result<String, IrlError> {
+        let spinner = if !self.quiet {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::with_template("{spinner:.green} {msg}")
+                    .unwrap()
+                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+            );
+            pb.set_message(format!("Fetching {}", truncate_url(url)));
+            pb.enable_steady_tick(Duration::from_millis(100));
+            Some(pb)
+        } else {
+            None
+        };
+
+        if self.verbose {
+            eprintln!("  → GET {} (browser-like)", url);
+        }
+
+        let result = self.client.get(url).send().await;
+
+        if let Some(pb) = &spinner {
+            pb.finish_and_clear();
+        }
+
+        match result {
+            Ok(response) => {
+                if self.verbose {
+                    eprintln!("  ← {} {}", response.status(), url);
+                }
+
+                if response.status().is_success() {
+                    response.text().await.map_err(IrlError::Http)
+                } else {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+
+                    // Detect Cloudflare challenge pages
+                    let is_cloudflare = body.contains("cf-browser-verification")
+                        || body.contains("Checking your browser")
+                        || body.contains("cf_clearance")
+                        || body.contains("challenges.cloudflare.com");
+
+                    if is_cloudflare {
+                        Err(IrlError::ApiError {
+                            status: status.as_u16(),
+                            message: format!(
+                                "Cloudflare protection detected at {}. \
+                                 This source requires browser access and cannot be queried via CLI. \
+                                 Visit the website directly.",
+                                url
+                            ),
+                        })
+                    } else {
+                        Err(IrlError::ApiError {
+                            status: status.as_u16(),
+                            message: format!("{} from {}", status, url),
+                        })
+                    }
+                }
+            }
+            Err(e) => Err(IrlError::Http(e)),
+        }
+    }
+}
+
 fn truncate_url(url: &str) -> String {
     if url.len() > 60 {
         format!("{}...", &url[..57])

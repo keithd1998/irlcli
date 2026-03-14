@@ -1,10 +1,18 @@
 use anyhow::Result;
 use clap::Subcommand;
 
+use irl_core::fuzzy;
 use irl_core::output::OutputConfig;
 
 use crate::api::OireachtasApi;
+use crate::constituencies;
 use crate::models::*;
+
+/// Maximum number of results to fetch when auto-paginating for filtered queries.
+const MAX_AUTO_PAGINATE: u32 = 500;
+
+/// Page size when auto-paginating.
+const AUTO_PAGE_SIZE: u32 = 50;
 
 #[derive(Debug, Subcommand)]
 pub enum OireachtasCommands {
@@ -24,7 +32,7 @@ pub enum OireachtasCommands {
         /// Filter by constituency name (case-insensitive substring match)
         #[arg(long)]
         constituency: Option<String>,
-        /// Maximum number of results
+        /// Maximum number of results to display
         #[arg(long, default_value = "50")]
         limit: u32,
         /// Page number (0-based)
@@ -51,7 +59,7 @@ pub enum OireachtasCommands {
         /// Filter by year
         #[arg(long)]
         year: Option<String>,
-        /// Maximum number of results
+        /// Maximum number of results to display
         #[arg(long, default_value = "20")]
         limit: u32,
         /// Page number (0-based)
@@ -89,7 +97,7 @@ pub enum OireachtasCommands {
         /// Filter by member name (case-insensitive substring match)
         #[arg(long)]
         member: Option<String>,
-        /// Maximum number of results
+        /// Maximum number of results to display
         #[arg(long, default_value = "20")]
         limit: u32,
         /// Page number (0-based)
@@ -117,6 +125,56 @@ pub enum OireachtasCommands {
     },
 }
 
+/// Auto-paginate through all API pages to collect complete results.
+/// This ensures filtered queries don't miss results that fall on later pages.
+async fn paginate_all<T, F, Fut>(fetch_page: F) -> Result<Vec<T>>
+where
+    F: Fn(u32, u32) -> Fut,
+    Fut: std::future::Future<Output = Result<ApiResponse<T>, irl_core::error::IrlError>>,
+    T: serde::Serialize,
+{
+    let mut all_results = Vec::new();
+    let mut skip = 0u32;
+    loop {
+        let response = fetch_page(AUTO_PAGE_SIZE, skip).await?;
+        let count = response.results.len() as u32;
+        all_results.extend(response.results);
+        if count < AUTO_PAGE_SIZE || all_results.len() as u32 >= MAX_AUTO_PAGINATE {
+            break;
+        }
+        skip += AUTO_PAGE_SIZE;
+    }
+    Ok(all_results)
+}
+
+/// Helper to filter BillResult using raw API data.
+fn bill_matches(
+    result: &BillResult,
+    search: &Option<String>,
+    status: &Option<String>,
+    year: &Option<String>,
+) -> bool {
+    if let Some(search_term) = search {
+        let title = result.bill.short_title_en.as_deref().unwrap_or("");
+        if !title.to_lowercase().contains(&search_term.to_lowercase()) {
+            return false;
+        }
+    }
+    if let Some(status_filter) = status {
+        let bill_status = result.bill.status.as_deref().unwrap_or("");
+        if !bill_status.to_lowercase().contains(&status_filter.to_lowercase()) {
+            return false;
+        }
+    }
+    if let Some(year_filter) = year {
+        let bill_year = result.bill.bill_year.as_deref().unwrap_or("");
+        if bill_year != year_filter {
+            return false;
+        }
+    }
+    true
+}
+
 pub async fn handle_command(
     cmd: &OireachtasCommands,
     output: &OutputConfig,
@@ -134,27 +192,91 @@ pub async fn handle_command(
             page,
         } => {
             output.print_header("Members of the Oireachtas");
-            let skip = page * limit;
-            let response = api.list_members(Some("dail"), *limit, skip).await?;
 
-            let mut rows: Vec<MemberRow> = response
-                .results
-                .iter()
-                .map(MemberRow::from_result)
-                .collect();
+            // Resolve constituency name (handles historical redistricting)
+            let resolved_constituency = if let Some(const_input) = constituency {
+                let (resolved, was_historical) = constituencies::resolve_constituency(const_input);
+                if was_historical && !resolved.is_empty() {
+                    output.print_info(&format!(
+                        "Note: \"{}\" was redistricted. Searching current constituencies: {}",
+                        const_input,
+                        resolved.join(", ")
+                    ));
+                }
+                if resolved.is_empty() {
+                    // Try fuzzy matching
+                    let suggestions = fuzzy::fuzzy_match(
+                        const_input,
+                        constituencies::CURRENT_CONSTITUENCIES,
+                        0.75,
+                    );
+                    if !suggestions.is_empty() {
+                        output.print_info(&format!(
+                            "No constituency matching \"{}\". {}",
+                            const_input,
+                            fuzzy::format_suggestions(&suggestions)
+                        ));
+                    } else {
+                        output.print_info(&format!(
+                            "No constituency matching \"{}\". Use `irl oireachtas members` to see all constituencies.",
+                            const_input
+                        ));
+                    }
+                }
+                Some(resolved)
+            } else {
+                None
+            };
 
-            // Client-side filtering
-            if let Some(party_filter) = party {
-                let filter = party_filter.to_lowercase();
-                rows.retain(|r| r.party.to_lowercase().contains(&filter));
-            }
-            if let Some(const_filter) = constituency {
-                let filter = const_filter.to_lowercase();
-                rows.retain(|r| r.constituency.to_lowercase().contains(&filter));
-            }
+            let has_filter = party.is_some() || constituency.is_some();
 
-            output.print_info(&format!("{} members found", rows.len()));
-            output.render(&rows)?;
+            let mut results = if has_filter {
+                let all = paginate_all(|limit, skip| api.list_members(Some("dail"), limit, skip)).await?;
+                all.into_iter()
+                    .filter(|r| {
+                        // Party filter
+                        if let Some(party_filter) = party {
+                            let member_party = r.member.memberships.as_ref()
+                                .and_then(|ms| ms.last())
+                                .and_then(|mw| mw.membership.parties.as_ref())
+                                .and_then(|ps| ps.last())
+                                .and_then(|pw| pw.party.show_as.as_deref())
+                                .unwrap_or("");
+                            if !member_party.to_lowercase().contains(&party_filter.to_lowercase()) {
+                                return false;
+                            }
+                        }
+                        // Constituency filter (using resolved names)
+                        if let Some(ref resolved) = resolved_constituency {
+                            if resolved.is_empty() {
+                                return false; // No valid constituency to match against
+                            }
+                            let member_const = r.member.memberships.as_ref()
+                                .and_then(|ms| ms.last())
+                                .and_then(|mw| mw.membership.represents.as_ref())
+                                .and_then(|rs| rs.last())
+                                .and_then(|rw| rw.represent.show_as.as_deref())
+                                .unwrap_or("");
+                            let member_lower = member_const.to_lowercase();
+                            if !resolved.iter().any(|c| member_lower.contains(&c.to_lowercase())) {
+                                return false;
+                            }
+                        }
+                        true
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                let skip = page * limit;
+                let response = api.list_members(Some("dail"), *limit, skip).await?;
+                response.results
+            };
+
+            results.truncate(*limit as usize);
+            let display_rows: Vec<MemberRow> =
+                results.iter().map(MemberRow::from_result).collect();
+
+            output.print_info(&format!("{} members found", display_rows.len()));
+            output.render_full(&display_rows, &results)?;
         }
 
         OireachtasCommands::Legislation {
@@ -165,26 +287,26 @@ pub async fn handle_command(
             page,
         } => {
             output.print_header("Legislation");
-            let skip = page * limit;
-            let response = api.list_legislation(*limit, skip).await?;
 
-            let mut rows: Vec<BillRow> =
-                response.results.iter().map(BillRow::from_result).collect();
+            let has_filter = search.is_some() || status.is_some() || year.is_some();
 
-            if let Some(search_term) = search {
-                let filter = search_term.to_lowercase();
-                rows.retain(|r| r.title.to_lowercase().contains(&filter));
-            }
-            if let Some(status_filter) = status {
-                let filter = status_filter.to_lowercase();
-                rows.retain(|r| r.status.to_lowercase().contains(&filter));
-            }
-            if let Some(year_filter) = year {
-                rows.retain(|r| r.year == *year_filter);
-            }
+            let mut results = if has_filter {
+                let all = paginate_all(|limit, skip| api.list_legislation(limit, skip)).await?;
+                all.into_iter()
+                    .filter(|r| bill_matches(r, search, status, year))
+                    .collect::<Vec<_>>()
+            } else {
+                let skip = page * limit;
+                let response = api.list_legislation(*limit, skip).await?;
+                response.results
+            };
 
-            output.print_info(&format!("{} bills found", rows.len()));
-            output.render(&rows)?;
+            results.truncate(*limit as usize);
+            let display_rows: Vec<BillRow> =
+                results.iter().map(BillRow::from_result).collect();
+
+            output.print_info(&format!("{} bills found", display_rows.len()));
+            output.render_full(&display_rows, &results)?;
         }
 
         OireachtasCommands::Debates {
@@ -202,14 +324,14 @@ pub async fn handle_command(
                 .list_debates(chamber.as_deref(), date_start, date_end, *limit, 0)
                 .await?;
 
-            let rows: Vec<DebateRow> = response
+            let display_rows: Vec<DebateRow> = response
                 .results
                 .iter()
                 .map(DebateRow::from_result)
                 .collect();
 
-            output.print_info(&format!("{} debate records found", rows.len()));
-            output.render(&rows)?;
+            output.print_info(&format!("{} debate records found", display_rows.len()));
+            output.render_full(&display_rows, &response.results)?;
         }
 
         OireachtasCommands::Questions {
@@ -218,22 +340,33 @@ pub async fn handle_command(
             page,
         } => {
             output.print_header("Parliamentary Questions");
-            let skip = page * limit;
-            let response = api.list_questions(*limit, skip).await?;
 
-            let mut rows: Vec<QuestionRow> = response
-                .results
-                .iter()
-                .map(QuestionRow::from_result)
-                .collect();
+            let mut results = if member.is_some() {
+                // Auto-paginate to find all questions by this member
+                let all = paginate_all(|limit, skip| api.list_questions(limit, skip)).await?;
+                let member_filter = member.as_ref().unwrap().to_lowercase();
+                all.into_iter()
+                    .filter(|r| {
+                        r.question
+                            .by
+                            .as_ref()
+                            .and_then(|b| b.show_as.as_ref())
+                            .map(|name| name.to_lowercase().contains(&member_filter))
+                            .unwrap_or(false)
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                let skip = page * limit;
+                let response = api.list_questions(*limit, skip).await?;
+                response.results
+            };
 
-            if let Some(member_filter) = member {
-                let filter = member_filter.to_lowercase();
-                rows.retain(|r| r.asked_by.to_lowercase().contains(&filter));
-            }
+            results.truncate(*limit as usize);
+            let display_rows: Vec<QuestionRow> =
+                results.iter().map(QuestionRow::from_result).collect();
 
-            output.print_info(&format!("{} questions found", rows.len()));
-            output.render(&rows)?;
+            output.print_info(&format!("{} questions found", display_rows.len()));
+            output.render_full(&display_rows, &results)?;
         }
 
         OireachtasCommands::Divisions {
@@ -245,14 +378,14 @@ pub async fn handle_command(
             let skip = page * limit;
             let response = api.list_divisions(*limit, skip).await?;
 
-            let rows: Vec<DivisionRow> = response
+            let display_rows: Vec<DivisionRow> = response
                 .results
                 .iter()
                 .map(DivisionRow::from_result)
                 .collect();
 
-            output.print_info(&format!("{} divisions found", rows.len()));
-            output.render(&rows)?;
+            output.print_info(&format!("{} divisions found", display_rows.len()));
+            output.render_full(&display_rows, &response.results)?;
         }
     }
 
